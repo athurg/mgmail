@@ -1,0 +1,6 @@
+.build/
+dist/
+*.xcodeproj
+.DS_Store
+# 本地 OAuth 客户端凭据不应入库
+oauth_client.json
