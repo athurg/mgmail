@@ -11,6 +11,8 @@ struct RenderedMessage: Codable, Identifiable {
     let bodyHTML: String
     let attachments: [Attachment]
     let isUnread: Bool
+    /// 折叠态用的预览摘要（Gmail 提供的 snippet）。可选以兼容旧缓存解码。
+    let snippet: String?
 
     var dateText: String {
         guard let date else { return "" }
@@ -22,7 +24,8 @@ struct RenderedMessage: Codable, Identifiable {
     /// 返回替换了正文的副本。
     func withBody(_ html: String) -> RenderedMessage {
         RenderedMessage(id: id, fromName: fromName, fromEmail: fromEmail, to: to, date: date,
-                        subject: subject, bodyHTML: html, attachments: attachments, isUnread: isUnread)
+                        subject: subject, bodyHTML: html, attachments: attachments, isUnread: isUnread,
+                        snippet: snippet)
     }
 }
 
@@ -179,7 +182,8 @@ final class MessageDetailModel: ObservableObject {
             subject: subject,
             bodyHTML: body,
             attachments: MimeParser.attachments(message.payload, messageID: message.id),
-            isUnread: message.isUnread
+            isUnread: message.isUnread,
+            snippet: message.snippet
         )
     }
 
