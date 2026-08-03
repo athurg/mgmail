@@ -7,6 +7,8 @@ struct MessageDetailView: View {
     @StateObject private var model = MessageDetailModel()
     @State private var showLabelPopover = false
     @State private var actionError: String?
+    /// 当前展开的邮件 id 集合（会话里其余邮件折叠）。
+    @State private var expanded: Set<String> = []
 
     var body: some View {
         Group {
@@ -82,24 +84,48 @@ struct MessageDetailView: View {
 
     private var content: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text(model.subject)
                     .font(.title2).bold()
                     .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding([.horizontal, .top])
-                    .padding(.bottom, 8)
-                Divider()
+
                 ForEach(model.messages) { message in
-                    MessageCard(message: message, account: model.account ?? "")
-                    Divider()
+                    MessageCard(
+                        message: message,
+                        account: model.account ?? "",
+                        isExpanded: expanded.contains(message.id),
+                        onToggle: { toggle(message.id) }
+                    )
+                    .padding(.horizontal)
                 }
             }
+            .padding(.bottom, 12)
         }
+    }
+
+    /// 切换单封邮件的展开/折叠。
+    private func toggle(_ id: String) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+        }
+    }
+
+    /// 会话加载后设定默认展开：多封时展开未读邮件；若全已读，只展开最新一封；单封则直接展开。
+    private func applyDefaultExpansion() {
+        let msgs = model.messages
+        guard !msgs.isEmpty else { expanded = []; return }
+        if msgs.count == 1 { expanded = [msgs[0].id]; return }
+        let unread = msgs.filter(\.isUnread).map(\.id)
+        expanded = unread.isEmpty ? Set([msgs.last!.id]) : Set(unread)
     }
 
     private func reload() async {
         guard let selected = appState.singleSelection else { return }
         await model.load(account: selected.accountID, threadID: selected.threadID)
+        // 在标记已读之前按未读状态决定默认展开
+        applyDefaultExpansion()
         // 打开即标记已读，并广播让列表更新未读点
         if model.isUnread {
             await model.markReadOnOpenIfNeeded()
@@ -108,50 +134,86 @@ struct MessageDetailView: View {
     }
 }
 
-/// 单封邮件卡片：头信息 + 正文（WKWebView）+ 附件。
+/// 单封邮件卡片：可折叠。折叠时只显示头部摘要；展开时显示正文（WKWebView）与附件。
 struct MessageCard: View {
     let message: RenderedMessage
     let account: String
+    let isExpanded: Bool
+    let onToggle: () -> Void
 
     @State private var webHeight: CGFloat = 40
     @State private var showRemote = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             header
-            if showsRemoteBanner {
-                remoteBanner
-            }
-            MessageWebView(html: message.bodyHTML, blockRemote: !showRemote, height: $webHeight)
-                .frame(height: webHeight)
-            if !message.attachments.isEmpty {
-                attachmentsView
+            if isExpanded {
+                Divider().padding(.horizontal, 12)
+                VStack(alignment: .leading, spacing: 8) {
+                    if showsRemoteBanner {
+                        remoteBanner
+                    }
+                    MessageWebView(html: message.bodyHTML, blockRemote: !showRemote, height: $webHeight)
+                        .frame(height: webHeight)
+                    if !message.attachments.isEmpty {
+                        attachmentsView
+                    }
+                }
+                .padding(12)
             }
         }
-        .padding()
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .textBackgroundColor)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(isExpanded ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.08),
+                        lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
+    /// 头部：始终显示，点击切换展开/折叠。
     private var header: some View {
         HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(Color(hue: Double(abs(message.fromEmail.hashValue) % 360) / 360, saturation: 0.5, brightness: 0.85))
-                .frame(width: 32, height: 32)
-                .overlay(Text(String(message.fromName.first ?? "?").uppercased())
-                    .font(.system(size: 14, weight: .bold)).foregroundStyle(.white))
+            avatar
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
+                HStack(spacing: 6) {
+                    if message.isUnread {
+                        Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+                    }
                     Text(message.fromName).fontWeight(.semibold)
-                    Text(message.fromEmail).font(.caption).foregroundStyle(.secondary)
+                    if isExpanded {
+                        Text(message.fromEmail).font(.caption).foregroundStyle(.secondary)
+                    }
                     Spacer()
                     Text(message.dateText).font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
                 }
-                if !message.to.isEmpty {
-                    Text("收件人：\(message.to)")
+                if isExpanded {
+                    if !message.to.isEmpty {
+                        Text("收件人：\(message.to)")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text(message.snippet ?? "")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
         }
+        .padding(12)
+        .contentShape(Rectangle())
+        .onTapGesture { onToggle() }
+    }
+
+    private var avatar: some View {
+        Circle()
+            .fill(Color(hue: Double(abs(message.fromEmail.hashValue) % 360) / 360, saturation: 0.5, brightness: 0.85))
+            .frame(width: 32, height: 32)
+            .overlay(Text(String(message.fromName.first ?? "?").uppercased())
+                .font(.system(size: 14, weight: .bold)).foregroundStyle(.white))
     }
 
     private var showsRemoteBanner: Bool {
