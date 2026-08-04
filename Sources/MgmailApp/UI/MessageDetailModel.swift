@@ -47,22 +47,30 @@ final class MessageDetailModel: ObservableObject {
     var isStarred: Bool { threadLabelIds.contains("STARRED") }
     var isInInbox: Bool { threadLabelIds.contains("INBOX") }
 
-    /// 打开会话：先用磁盘缓存 seed 显示，再后台拉最新（SWR）。
-    func load(account: String, threadID: String) async {
+    /// 只用磁盘缓存 seed 显示，立即返回（不联网）。返回是否命中缓存。
+    /// 拆出这一步是为了让调用方在缓存命中后能「立刻」展开正文，
+    /// 而不必等后面的联网刷新完成（否则正文卡片会白等几秒才展开）。
+    @discardableResult
+    func seedFromCache(account: String, threadID: String) async -> Bool {
         self.account = account
         self.threadID = threadID
         loadError = nil
 
         // 先从缓存 seed（瞬时显示，含已内联的图片）
         if let cached = await MailCache.shared.thread(account: account, threadID: threadID) {
-            guard self.threadID == threadID else { return }
+            guard self.threadID == threadID else { return false }
             messages = cached.messages
             subject = cached.subject
             threadLabelIds = Set(cached.threadLabelIds)
+            return true
         } else {
             messages = []
+            return false
         }
+    }
 
+    /// 联网拉最新并写回缓存（SWR 的 R）。在 seedFromCache 之后调用。
+    func refresh(account: String, threadID: String) async {
         isLoading = true
         defer { isLoading = false }
         await refreshFromServer(account: account, threadID: threadID)
