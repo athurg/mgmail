@@ -46,7 +46,7 @@ cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
 # 应用图标：缺失则从 SVG 现生成，再拷入 .app 的 Resources
 ICON_SRC="Resources/AppIcon.icns"
 if [[ ! -f "$ICON_SRC" && -x "Scripts/make_icon.sh" ]]; then
-  echo "==> 未找到 $ICON_SRC，尝试从 SVG 生成"
+  echo "==> 未找到 ${ICON_SRC}，尝试从 SVG 生成"
   Scripts/make_icon.sh || true
 fi
 if [[ -f "$ICON_SRC" ]]; then
@@ -96,10 +96,10 @@ PLIST
 # 证书可用「钥匙串访问 → 证书助理 → 创建证书」生成（类型：代码签名，自签名根）。
 SIGN_IDENTITY="${MGMAIL_SIGN_IDENTITY:-Mgmail Dev}"
 if security find-identity -p codesigning 2>/dev/null | grep -q "\"$SIGN_IDENTITY\""; then
-  echo "==> 用「$SIGN_IDENTITY」签名"
+  echo "==> 用「${SIGN_IDENTITY}」签名"
   codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP_DIR"
 else
-  echo "==> 跳过签名：未找到证书「$SIGN_IDENTITY」（app 将保持未签名，Keychain 每次重编译会重弹授权）"
+  echo "==> 跳过签名：未找到证书「${SIGN_IDENTITY}」（app 将保持未签名，Keychain 每次重编译会重弹授权）"
 fi
 
 echo "==> 完成: $APP_DIR"
