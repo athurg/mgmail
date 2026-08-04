@@ -1,0 +1,52 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- 背景对角渐变：靛蓝 -> 紫 -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5B7CFA"/>
+      <stop offset="0.55" stop-color="#6A5AE0"/>
+      <stop offset="1" stop-color="#8B3FD6"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 信封纸面微渐变 -->
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#EEF1FB"/>
+    </linearGradient>
+    <linearGradient id="flap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F5F7FF"/>
+      <stop offset="1" stop-color="#DDE3F5"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="26" flood-color="#1A1246" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <!-- 圆角方底 -->
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="184" fill="url(#sheen)"/>
+
+  <!-- 后方错位堆叠的卡片：代表多账户 -->
+  <g filter="url(#shadow)">
+    <rect x="356" y="352" width="312" height="150" rx="34" fill="#ffffff" opacity="0.45"/>
+    <rect x="332" y="392" width="360" height="150" rx="36" fill="#ffffff" opacity="0.70"/>
+  </g>
+
+  <!-- 主信封 -->
+  <g filter="url(#shadow)">
+    <rect x="300" y="436" width="424" height="300" rx="42" fill="url(#paper)"/>
+    <!-- 封盖：从两上角连到中心，形成 V -->
+    <path d="M300 470
+             Q300 436 342 436
+             L682 436
+             Q724 436 724 470
+             L724 486
+             L512 622
+             L300 486 Z" fill="url(#flap)"/>
+    <!-- 封盖内折阴影线 -->
+    <path d="M300 478 L512 616 L724 478" fill="none" stroke="#B9C2E0" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
