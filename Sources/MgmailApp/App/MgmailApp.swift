@@ -16,8 +16,10 @@ struct MgmailApp: App {
         .commands {
             SidebarCommands()
             CommandMenu("账号") {
-                Button("账号管理…") { appState.showAccountManager = true }
-                    .keyboardShortcut(",", modifiers: [.command, .shift])
+                SettingsLink {
+                    Text("账号与分组…")
+                }
+                .keyboardShortcut(",", modifiers: [.command, .shift])
                 Button(appState.isSigningIn ? "重新开始添加账号…" : "添加账号…") { appState.addAccount() }
                     .disabled(!appState.hasOAuthConfig)
             }
@@ -25,6 +27,7 @@ struct MgmailApp: App {
 
         Settings {
             SettingsView()
+                .environmentObject(appState)
         }
     }
 }
@@ -37,10 +40,6 @@ struct RootView: View {
         NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-                .sheet(isPresented: $appState.showAccountManager) {
-                    AccountManagerView()
-                        .environmentObject(appState)
-                }
         } content: {
             ThreadListView()
                 .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 520)

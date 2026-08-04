@@ -1,19 +1,12 @@
 import SwiftUI
 
-/// 账号管理面板：改显示名、加备注、移除账号、添加账号。
-struct AccountManagerView: View {
+/// 设置窗口的「账号」页：改显示名、加备注、移除账号、添加账号。
+struct AccountSettingsPane: View {
     @EnvironmentObject private var appState: AppState
-    @Environment(\.dismiss) private var dismiss
     @State private var pendingRemoval: Account?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("账号管理").font(.title2).bold()
-                Spacer()
-                Button("完成") { dismiss() }.keyboardShortcut(.defaultAction)
-            }
-
             if appState.accounts.isEmpty {
                 ContentUnavailableView("暂无账号", systemImage: "person.crop.circle.badge.plus")
                     .frame(maxWidth: .infinity, minHeight: 160)
@@ -25,7 +18,7 @@ struct AccountManagerView: View {
                         }
                     }
                 }
-                .frame(minHeight: 200, maxHeight: 360)
+                .frame(maxHeight: .infinity)
             }
 
             Divider()
@@ -41,7 +34,6 @@ struct AccountManagerView: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
         .alert("移除账号", isPresented: Binding(
             get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }
         )) {

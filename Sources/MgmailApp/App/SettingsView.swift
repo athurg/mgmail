@@ -4,14 +4,30 @@ import SwiftUI
 enum SettingsKey {
     /// 是否默认加载邮件中的远程内容（图片/样式等）。默认开启。
     static let loadRemoteContentByDefault = "loadRemoteContentByDefault"
+    /// 设置窗口上次停留的标签页（用于从菜单/右键直达对应页）。
+    static let settingsTab = "settings.selectedTab"
 }
 
-/// 设置窗口（⌘,）。目前包含「隐私」一项：默认远程内容加载开关。
+/// 设置窗口的标签页。
+enum SettingsTab: String {
+    case accounts, profiles, privacy
+}
+
+/// 设置窗口（⌘,）：账号、分组、隐私三页。
 struct SettingsView: View {
     @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = true
+    @AppStorage(SettingsKey.settingsTab) private var selectedTab = SettingsTab.accounts.rawValue
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
+            AccountSettingsPane()
+                .tabItem { Label("账号", systemImage: "person.crop.circle") }
+                .tag(SettingsTab.accounts.rawValue)
+
+            ProfileSettingsPane()
+                .tabItem { Label("分组", systemImage: "square.stack") }
+                .tag(SettingsTab.profiles.rawValue)
+
             Form {
                 Section {
                     Toggle("默认加载邮件中的远程内容", isOn: $loadRemoteByDefault)
@@ -25,7 +41,8 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("隐私", systemImage: "hand.raised") }
+            .tag(SettingsTab.privacy.rawValue)
         }
-        .frame(width: 460, height: 220)
+        .frame(width: 500, height: 420)
     }
 }

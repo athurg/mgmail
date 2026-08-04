@@ -43,20 +43,27 @@ struct SidebarView: View {
         )) {
             if appState.accounts.isEmpty {
                 emptyState
+            } else if appState.activeAccounts.isEmpty {
+                emptyProfileState
             } else {
                 fixedLabelsSection
                 customLabelsSections
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !appState.accounts.isEmpty {
+                ProfileSwitcher()
+            }
+        }
         .sheet(item: $appState.labelEditTarget) { target in
             LabelEditSheet(target: target)
                 .environmentObject(labelStore)
         }
-        .task(id: appState.accounts.map(\.id)) {
+        .task(id: appState.activeAccounts.map(\.id)) {
             // 并发加载各账号标签：每个都先用缓存瞬时 seed，避免串行等第一个网络刷新完
             await withTaskGroup(of: Void.self) { group in
-                for account in appState.accounts {
+                for account in appState.activeAccounts {
                     group.addTask { await labelStore.load(for: account.id) }
                 }
             }
@@ -68,7 +75,7 @@ struct SidebarView: View {
     @ViewBuilder
     private var fixedLabelsSection: some View {
         Section("邮箱") {
-            if appState.accounts.count == 1, let only = appState.accounts.first {
+            if appState.activeAccounts.count == 1, let only = appState.activeAccounts.first {
                 // 单账户直接平铺，避免多余的一层嵌套
                 ForEach(StandardMailbox.all) { box in
                     Label(box.name, systemImage: box.systemImage)
@@ -78,7 +85,7 @@ struct SidebarView: View {
                 // 多账户：点标签名看跨账号聚合，展开可选单个账号；默认折叠。
                 ForEach(StandardMailbox.all) { box in
                     DisclosureGroup(isExpanded: groupBinding("mbx:\(box.id)")) {
-                        ForEach(appState.accounts) { account in
+                        ForEach(appState.activeAccounts) { account in
                             accountMailboxRow(account, box)
                         }
                     } label: {
@@ -104,7 +111,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var customLabelsSections: some View {
-        ForEach(appState.accounts) { account in
+        ForEach(appState.activeAccounts) { account in
             let tree = LabelTree.build(labelStore.userLabels(for: account.id))
             // 可折叠：点账号名（分组头）隐藏/展开该账号的标签列表。默认展开。
             Section(isExpanded: accountBinding(account.id)) {
@@ -139,10 +146,19 @@ struct SidebarView: View {
             Label("暂无账户", systemImage: "person.crop.circle.badge.plus")
         } description: {
             if appState.hasOAuthConfig {
-                Text("从菜单栏「账号 → 账号管理」添加你的 Gmail")
+                Text("从菜单栏「账号 → 账号与分组…」添加你的 Gmail")
             } else {
                 Text("先完成 OAuth 配置，再添加账户")
             }
+        }
+    }
+
+    /// 当前分组里一个账号都没有时的占位。
+    private var emptyProfileState: some View {
+        ContentUnavailableView {
+            Label("该分组暂无账号", systemImage: "person.2.slash")
+        } description: {
+            Text("右键分组标签选「管理分组…」把账号加进来，或再点一次该标签回到全部账号")
         }
     }
 
@@ -169,7 +185,7 @@ struct SidebarView: View {
                 appState.labelEditTarget = LabelEditTarget(accountID: account.id, label: nil)
             }
             Divider()
-            Button("账号管理…") { appState.showAccountManager = true }
+            SettingsLink { Text("账号与分组…") }
             Button("移除账户", role: .destructive) { appState.removeAccount(account) }
         }
     }
