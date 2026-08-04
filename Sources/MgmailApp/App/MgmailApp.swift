@@ -22,6 +22,10 @@ struct MgmailApp: App {
                     .disabled(!appState.hasOAuthConfig)
             }
         }
+
+        Settings {
+            SettingsView()
+        }
     }
 }
 
