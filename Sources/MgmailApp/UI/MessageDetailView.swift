@@ -142,7 +142,13 @@ struct MessageCard: View {
     let onToggle: () -> Void
 
     @State private var webHeight: CGFloat = 40
+    /// 用户在本封邮件里手动点击「加载远程内容」后置为 true。
     @State private var showRemote = false
+    /// 全局设置：是否默认加载远程内容。默认开启。
+    @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = true
+
+    /// 本封邮件最终是否加载远程内容：全局默认开启，或用户手动加载过。
+    private var remoteEnabled: Bool { loadRemoteByDefault || showRemote }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -153,7 +159,7 @@ struct MessageCard: View {
                     if showsRemoteBanner {
                         remoteBanner
                     }
-                    MessageWebView(html: message.bodyHTML, blockRemote: !showRemote, height: $webHeight)
+                    MessageWebView(html: message.bodyHTML, blockRemote: !remoteEnabled, height: $webHeight)
                         .frame(height: webHeight)
                     if !message.attachments.isEmpty {
                         attachmentsView
@@ -217,8 +223,8 @@ struct MessageCard: View {
     }
 
     private var showsRemoteBanner: Bool {
-        // 简单策略：正文里含 http(s) 资源引用时提示可加载远程内容
-        !showRemote && (message.bodyHTML.contains("http://") || message.bodyHTML.contains("https://"))
+        // 仅在实际处于阻止状态、且正文含 http(s) 资源引用时，提示可加载远程内容。
+        !remoteEnabled && (message.bodyHTML.contains("http://") || message.bodyHTML.contains("https://"))
     }
 
     private var remoteBanner: some View {
