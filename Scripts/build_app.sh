@@ -43,6 +43,19 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
 
+# 应用图标：缺失则从 SVG 现生成，再拷入 .app 的 Resources
+ICON_SRC="Resources/AppIcon.icns"
+if [[ ! -f "$ICON_SRC" && -x "Scripts/make_icon.sh" ]]; then
+  echo "==> 未找到 $ICON_SRC，尝试从 SVG 生成"
+  Scripts/make_icon.sh || true
+fi
+if [[ -f "$ICON_SRC" ]]; then
+  cp "$ICON_SRC" "$APP_DIR/Contents/Resources/AppIcon.icns"
+  echo "==> 已嵌入图标 AppIcon.icns"
+else
+  echo "==> 跳过图标：$ICON_SRC 不存在"
+fi
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -56,6 +69,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
