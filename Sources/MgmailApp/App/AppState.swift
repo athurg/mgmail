@@ -7,6 +7,30 @@ final class AppState: ObservableObject {
     /// 已登录账户列表。
     @Published var accounts: [Account] = []
 
+    /// 账号分组（Profile）列表。
+    @Published var profiles: [Profile] = []
+
+    /// 当前选中的 Profile id；`nil` 表示内置「全部」聚合（显示所有账号）。
+    @Published var currentProfileID: String? {
+        didSet { ProfileStore.saveCurrentID(currentProfileID) }
+    }
+
+    /// 当前分组下参与聚合/侧栏的账号。「全部」态返回所有账号；选中某分组时返回其成员（按账号列表顺序）。
+    var activeAccounts: [Account] {
+        guard let pid = currentProfileID,
+              let profile = profiles.first(where: { $0.id == pid }) else {
+            return accounts
+        }
+        let members = Set(profile.memberEmails)
+        return accounts.filter { members.contains($0.email) }
+    }
+
+    /// 尚未归入任何分组的账号（仅在「全部」里可见）。
+    var ungroupedAccounts: [Account] {
+        let grouped = Set(profiles.flatMap(\.memberEmails))
+        return accounts.filter { !grouped.contains($0.email) }
+    }
+
     /// 当前侧栏选中的邮箱/标签。
     @Published var selection: MailboxSelection?
 
@@ -34,9 +58,6 @@ final class AppState: ObservableObject {
     @Published var lastThreadChange: ThreadChange?
     private var changeToken = 0
 
-    /// 是否展示账号管理面板。
-    @Published var showAccountManager = false
-
     /// 头像缓存更新计数（下载完成后自增，驱动头像视图刷新）。
     @Published var avatarReloadToken = 0
 
@@ -51,10 +72,104 @@ final class AppState: ObservableObject {
 
     init() {
         accounts = AccountStore.load()
+        profiles = ProfileStore.load()
+        // 恢复上次选中的分组；若指向已不存在的分组则回落到「全部」。
+        let savedID = ProfileStore.loadCurrentID()
+        currentProfileID = profiles.contains { $0.id == savedID } ? savedID : nil
         hasOAuthConfig = GoogleConfig.load() != nil
         // 一次性迁移旧钥匙串 token 到文件存储（迁移完成后可移除本行与 TokenMigration.swift）
         TokenMigration.migrateFromKeychain(emails: accounts.map(\.email))
         selectDefaultInboxIfNeeded()
+    }
+
+    // MARK: - Profile 分组管理（互斥归属）
+
+    /// 切换当前分组。若原选中的是某个不在新分组内的具体账号，回落到聚合收件箱，并清理越界的多选。
+    func setCurrentProfile(_ id: String?) {
+        currentProfileID = id
+        if let accID = selection?.accountID,
+           !activeAccounts.contains(where: { $0.id == accID }) {
+            selection = MailboxSelection(accountID: nil, labelID: "INBOX", labelName: "收件箱")
+        }
+        let activeIDs = Set(activeAccounts.map(\.id))
+        selectedThreads = selectedThreads.filter { activeIDs.contains($0.accountID) }
+    }
+
+    /// 新建分组并立即切换过去。颜色按现有分组数轮转取色。
+    @discardableResult
+    func addProfile(name: String) -> Profile {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profile = Profile(name: trimmed.isEmpty ? "新分组" : trimmed,
+                              colorIndex: profiles.count % Profile.palette.count)
+        profiles.append(profile)
+        ProfileStore.save(profiles)
+        setCurrentProfile(profile.id)
+        return profile
+    }
+
+    /// 重命名分组。
+    func renameProfile(_ id: String, to name: String) {
+        guard let idx = profiles.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        profiles[idx].name = trimmed
+        ProfileStore.save(profiles)
+    }
+
+    /// 更换分组颜色。
+    func setProfileColor(_ id: String, colorIndex: Int) {
+        guard let idx = profiles.firstIndex(where: { $0.id == id }) else { return }
+        profiles[idx].colorIndex = colorIndex
+        ProfileStore.save(profiles)
+    }
+
+    /// 把分组 `id` 移动到 `targetID` 之前/之后（拖动排序用）。
+    /// `after` 为 true 表示放到目标右侧。同一个分组拖到自己身上时不做任何事。
+    func moveProfile(_ id: String, relativeTo targetID: String, after: Bool) {
+        guard id != targetID,
+              let from = profiles.firstIndex(where: { $0.id == id }) else { return }
+        let moved = profiles.remove(at: from)
+        // 移除后再定位目标，索引才是准的。
+        guard let target = profiles.firstIndex(where: { $0.id == targetID }) else {
+            profiles.insert(moved, at: min(from, profiles.count))
+            return
+        }
+        profiles.insert(moved, at: after ? target + 1 : target)
+        ProfileStore.save(profiles)
+    }
+
+    /// 把分组移到末尾（拖到标签条空白处时用）。
+    func moveProfileToEnd(_ id: String) {
+        guard let from = profiles.firstIndex(where: { $0.id == id }) else { return }
+        let moved = profiles.remove(at: from)
+        profiles.append(moved)
+        ProfileStore.save(profiles)
+    }
+
+    /// 删除分组（不删账号本身）。若删的是当前分组，回落到「全部」。
+    func deleteProfile(_ id: String) {
+        profiles.removeAll { $0.id == id }
+        ProfileStore.save(profiles)
+        if currentProfileID == id { setCurrentProfile(nil) }
+    }
+
+    /// 把某账号归入某分组（`profileID == nil` 表示移出分组，回到「未分组」）。
+    /// 互斥：加入前先从其它所有分组移除。
+    func assignAccount(_ email: String, toProfile profileID: String?) {
+        for i in profiles.indices {
+            profiles[i].memberEmails.removeAll { $0 == email }
+        }
+        if let profileID, let idx = profiles.firstIndex(where: { $0.id == profileID }) {
+            profiles[idx].memberEmails.append(email)
+        }
+        ProfileStore.save(profiles)
+        // 归属变化后，当前分组的可见账号可能变化，纠正越界的选择。
+        setCurrentProfile(currentProfileID)
+    }
+
+    /// 查询某账号当前所属分组 id（未分组返回 nil）。
+    func profileID(ofAccount email: String) -> String? {
+        profiles.first { $0.memberEmails.contains(email) }?.id
     }
 
     /// 若尚未选择邮箱且已有账户，默认选中「聚合收件箱」（跨账号，不自动选中任何邮件）。
@@ -139,6 +254,13 @@ final class AppState: ObservableObject {
     func removeAccount(_ account: Account) {
         accounts.removeAll { $0.id == account.id }
         AccountStore.save(accounts)
+        // 从所有分组成员中移除该账号（分组本身保留）。
+        var profilesChanged = false
+        for i in profiles.indices where profiles[i].memberEmails.contains(account.email) {
+            profiles[i].memberEmails.removeAll { $0 == account.email }
+            profilesChanged = true
+        }
+        if profilesChanged { ProfileStore.save(profiles) }
         TokenStore.deleteRefreshToken(for: account.email)
         AvatarStore.remove(for: account.email)
         Task {

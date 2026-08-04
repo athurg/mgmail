@@ -6,11 +6,11 @@ struct ThreadListView: View {
     @EnvironmentObject private var labelStore: LabelStore
     @StateObject private var model = ThreadListModel()
 
-    /// 当前选择涉及的账号（聚合视图为全部账号）。
+    /// 当前选择涉及的账号（聚合视图为当前分组内账号）。
     private var selectionAccounts: [String] {
         guard let sel = appState.selection else { return [] }
         if let acc = sel.accountID { return [acc] }
-        return appState.accounts.map(\.id)
+        return appState.activeAccounts.map(\.id)
     }
 
     /// 用户标签映射（"账号\t labelId" → 标签），聚合视图跨账号，供行内 chip 使用。
