@@ -9,6 +9,8 @@ struct MessageDetailView: View {
     @State private var actionError: String?
     /// 当前展开的邮件 id 集合（会话里其余邮件折叠）。
     @State private var expanded: Set<String> = []
+    /// 上次据以计算默认展开的消息 id 集合；用于避免联网刷新后重复重置、覆盖用户手动展开。
+    @State private var expansionBasis: Set<String> = []
 
     var body: some View {
         Group {
@@ -113,9 +115,13 @@ struct MessageDetailView: View {
     }
 
     /// 会话加载后设定默认展开：多封时展开未读邮件；若全已读，只展开最新一封；单封则直接展开。
+    /// 仅当消息 id 集合相较上次发生变化时才重新计算，避免联网刷新后覆盖用户已手动调整的展开状态。
     private func applyDefaultExpansion() {
         let msgs = model.messages
-        guard !msgs.isEmpty else { expanded = []; return }
+        guard !msgs.isEmpty else { expanded = []; expansionBasis = []; return }
+        let ids = Set(msgs.map(\.id))
+        guard ids != expansionBasis else { return }
+        expansionBasis = ids
         if msgs.count == 1 { expanded = [msgs[0].id]; return }
         let unread = msgs.filter(\.isUnread).map(\.id)
         expanded = unread.isEmpty ? Set([msgs.last!.id]) : Set(unread)
@@ -123,8 +129,13 @@ struct MessageDetailView: View {
 
     private func reload() async {
         guard let selected = appState.singleSelection else { return }
-        await model.load(account: selected.accountID, threadID: selected.threadID)
-        // 在标记已读之前按未读状态决定默认展开
+        // 切换会话：先清掉旧的展开依据，保证下面 seed 命中后一定重算展开。
+        expansionBasis = []
+        // 1) 先只读缓存并立即展开正文（命中时无需等联网，正文瞬时可见）。
+        await model.seedFromCache(account: selected.accountID, threadID: selected.threadID)
+        applyDefaultExpansion()
+        // 2) 再联网增量刷新；仅当消息集合变化时才会再次调整展开。
+        await model.refresh(account: selected.accountID, threadID: selected.threadID)
         applyDefaultExpansion()
         // 打开即标记已读，并广播让列表更新未读点
         if model.isUnread {
