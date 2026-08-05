@@ -32,6 +32,7 @@ struct StandardMailbox: Identifiable, Hashable {
 struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
+    @ObservedObject private var drag = DragMonitor.shared
     @State private var expandedLabels: Set<String> = LabelExpansionStore.load()
     /// 自定义标签分组里被折叠的账户（默认展开，记录“已折叠”）。
     @State private var collapsedAccounts: Set<String> = LabelExpansionStore.loadCollapsed()
@@ -74,12 +75,15 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var fixedLabelsSection: some View {
+        // 拖动邮件时固定邮箱都不是放置目标，整体压暗，把注意力让给标签区
+        let dim = drag.isDraggingThreads ? 0.35 : 1
         Section("邮箱") {
             if appState.activeAccounts.count == 1, let only = appState.activeAccounts.first {
                 // 单账户直接平铺，避免多余的一层嵌套
                 ForEach(StandardMailbox.all) { box in
                     Label(box.name, systemImage: box.systemImage)
                         .tag(MailboxSelection(accountID: only.id, labelID: box.id, labelName: box.name))
+                        .opacity(dim)
                 }
             } else {
                 // 多账户：点标签名看跨账号聚合，展开可选单个账号；默认折叠。
@@ -92,9 +96,11 @@ struct SidebarView: View {
                         Label(box.name, systemImage: box.systemImage)
                             .tag(MailboxSelection(accountID: nil, labelID: box.id, labelName: box.name))
                     }
+                    .opacity(dim)
                 }
             }
         }
+        .animation(.easeOut(duration: 0.15), value: drag.isDraggingThreads)
     }
 
     /// 固定标签下某账户的一行。
@@ -113,26 +119,40 @@ struct SidebarView: View {
     private var customLabelsSections: some View {
         ForEach(appState.activeAccounts) { account in
             let tree = LabelTree.build(labelStore.userLabels(for: account.id))
+            let affinity = affinity(for: account.id)
             // 可折叠：点账号名（分组头）隐藏/展开该账号的标签列表。默认展开。
             Section(isExpanded: accountBinding(account.id)) {
                 if tree.isEmpty {
                     Text("无自定义标签").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ForEach(tree) { node in
-                        LabelNodeView(node: node, accountID: account.id, expanded: $expandedLabels)
+                        LabelNodeView(node: node, accountID: account.id,
+                                      expanded: $expandedLabels, affinity: affinity)
                     }
                 }
             } header: {
-                accountHeader(account)
+                accountHeader(account).opacity(affinity.dimmed ? 0.35 : 1)
             }
         }
+        .animation(.easeOut(duration: 0.15), value: drag.isDraggingThreads)
+    }
+
+    /// 拖动邮件时，某账号的标签区是「可放」还是「不可放」。
+    private func affinity(for accountID: String) -> DropAffinity {
+        guard drag.isDraggingThreads else { return .neutral }
+        return drag.draggingThreadsAccount == accountID ? .enabled : .disabled
     }
 
     /// 自定义标签分组的展开绑定（默认展开，记录“已折叠”）。
+    /// 拖动邮件时临时接管：只展开目标账号，其余折叠，且不写回持久化状态。
     private func accountBinding(_ id: String) -> Binding<Bool> {
         Binding(
-            get: { !collapsedAccounts.contains(id) },
+            get: {
+                if drag.isDraggingThreads { return drag.draggingThreadsAccount == id }
+                return !collapsedAccounts.contains(id)
+            },
             set: { isOpen in
+                guard !drag.isDraggingThreads else { return }
                 if isOpen { collapsedAccounts.remove(id) } else { collapsedAccounts.insert(id) }
                 LabelExpansionStore.saveCollapsed(collapsedAccounts)
             }
@@ -207,20 +227,74 @@ private struct LabelNodeView: View {
     let node: LabelNode
     let accountID: String
     @Binding var expanded: Set<String>
+    /// 拖动邮件时本账号标签区的可放置状态。
+    var affinity: DropAffinity = .neutral
     @EnvironmentObject private var appState: AppState
+    @ObservedObject private var drag = DragMonitor.shared
+    /// 全局设置：按会话显示时对整个会话打标签，否则只对单封。
+    @AppStorage(SettingsKey.conversationView) private var conversationView = false
+    @State private var isDropTargeted = false
 
     var body: some View {
         if node.children.isEmpty {
-            row.contextMenu { labelMenu }
+            interactiveRow
         } else {
             DisclosureGroup(isExpanded: expandBinding) {
                 ForEach(node.children) { child in
-                    LabelNodeView(node: child, accountID: accountID, expanded: $expanded)
+                    LabelNodeView(node: child, accountID: accountID,
+                                  expanded: $expanded, affinity: affinity)
                 }
             } label: {
-                row.contextMenu { labelMenu }
+                interactiveRow
             }
         }
+    }
+
+    /// 标签行 + 右键菜单 + 拖出自身 / 接收拖来的邮件。
+    @ViewBuilder
+    private var interactiveRow: some View {
+        let base = row.contextMenu { labelMenu }
+        if let label = node.label {
+            // 载荷表达式里只能出现值类型（见 DragMonitor 顶部说明）
+            let dragging = base.draggable(LabelDragPayload.beginning(
+                account: accountID, labelID: label.id, labelName: label.name))
+
+            switch affinity {
+            case .enabled:
+                dragging
+                    .onDrop(of: [.mgmailThreads], isTargeted: $isDropTargeted) { providers in
+                        accept(label, providers)
+                    }
+                    .background(isDropTargeted ? Color.accentColor.opacity(0.30)
+                                               : Color.accentColor.opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 5))
+            case .disabled:
+                dragging.opacity(0.35)
+            case .neutral:
+                dragging
+            }
+        } else {
+            // 纯中间层没有真实标签，不能拖也不能放
+            base.opacity(affinity == .neutral ? 1 : 0.35)
+        }
+    }
+
+    /// 给拖来的邮件加上本标签，成功后广播让列表刷新这些行。
+    private func accept(_ label: GmailLabel, _ providers: [NSItemProvider]) -> Bool {
+        DragMonitor.shared.end()
+        isDropTargeted = false
+        let conversation = conversationView
+        let account = accountID
+        Task {
+            guard let payload = await ThreadDragPayload.decode(from: providers),
+                  payload.accountIDs == [account] else { return }
+            if let error = await MailActions.modify(payload.items, add: [label.id],
+                                                    conversation: conversation) {
+                appState.errorMessage = error
+            }
+            appState.threadsDidChange(payload.items)
+        }
+        return true
     }
 
     @ViewBuilder

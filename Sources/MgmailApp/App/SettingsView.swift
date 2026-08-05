@@ -8,6 +8,8 @@ enum SettingsKey {
     static let conversationView = "conversationView"
     /// 设置窗口上次停留的标签页（用于从菜单/右键直达对应页）。
     static let settingsTab = "settings.selectedTab"
+    /// 列表右上角的已读/未读过滤（记住上次选择，非设置窗口里的项）。
+    static let readFilter = "threadList.readFilter"
 }
 
 /// 设置窗口的标签页。
