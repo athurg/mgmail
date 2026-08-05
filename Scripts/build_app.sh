@@ -87,6 +87,30 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
+    <!-- 应用内拖拽（邮件 ↔ 标签）用的私有 UTI -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.mgmail.threads</string>
+            <key>UTTypeDescription</key>
+            <string>Mgmail Threads</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.mgmail.label</string>
+            <key>UTTypeDescription</key>
+            <string>Mgmail Label</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST

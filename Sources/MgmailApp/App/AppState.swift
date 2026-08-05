@@ -58,6 +58,10 @@ final class AppState: ObservableObject {
     @Published var lastThreadChange: ThreadChange?
     private var changeToken = 0
 
+    /// 详情栏发起的删除请求，由中栏列表执行（复用列表的移除 + 自动选中下一封逻辑）。
+    @Published var trashRequest: ThreadRequest?
+    private var requestToken = 0
+
     /// 头像缓存更新计数（下载完成后自增，驱动头像视图刷新）。
     @Published var avatarReloadToken = 0
 
@@ -66,8 +70,20 @@ final class AppState: ObservableObject {
 
     /// 广播某会话发生了变化。
     func threadDidChange(account: String, id: String) {
+        threadsDidChange([SelectedThread(accountID: account, threadID: id)])
+    }
+
+    /// 广播一批会话发生了变化（批量打标签等）。
+    func threadsDidChange(_ items: [SelectedThread]) {
+        guard !items.isEmpty else { return }
         changeToken += 1
-        lastThreadChange = ThreadChange(account: account, id: id, token: changeToken)
+        lastThreadChange = ThreadChange(items: items, token: changeToken)
+    }
+
+    /// 请求删除某封邮件/会话（由中栏列表实际执行）。
+    func requestTrash(account: String, id: String) {
+        requestToken += 1
+        trashRequest = ThreadRequest(account: account, id: id, token: requestToken)
     }
 
     init() {
@@ -280,8 +296,8 @@ struct MailboxSelection: Hashable {
     let labelName: String
 }
 
-/// 中栏选中的会话（带来源账号）。
-struct SelectedThread: Hashable {
+/// 中栏选中的会话（带来源账号）。拖拽载荷会编码它，故需 Codable。
+struct SelectedThread: Hashable, Codable {
     let accountID: String
     let threadID: String
 }
@@ -302,9 +318,23 @@ struct SelectedThreadInfo: Hashable {
     let date: Date?
 }
 
-/// 会话变更事件。
+/// 会话变更事件（可含多条，供批量打标签后一次性刷新）。
 struct ThreadChange: Equatable {
+    let items: [SelectedThread]
+    let token: Int
+}
+
+/// 由详情栏发起、交给列表执行的操作请求。
+struct ThreadRequest: Equatable {
     let account: String
     let id: String
     let token: Int
+}
+
+/// 应用内拖拽的上下文，用于放置目标提前判断兼容性。
+enum DragContext: Equatable {
+    /// 从列表拖出的会话/邮件（多选时为整组，可能跨账号）。
+    case threads([SelectedThread])
+    /// 从侧栏拖出的一个标签。
+    case label(accountID: String, labelID: String, name: String)
 }

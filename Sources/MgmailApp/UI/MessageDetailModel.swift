@@ -48,6 +48,8 @@ final class MessageDetailModel: ObservableObject {
     var isUnread: Bool { threadLabelIds.contains("UNREAD") }
     var isStarred: Bool { threadLabelIds.contains("STARRED") }
     var isInInbox: Bool { threadLabelIds.contains("INBOX") }
+    /// 是否带有用户自建标签（Gmail 的用户标签 id 统一以 "Label_" 开头）。
+    var hasUserLabels: Bool { threadLabelIds.contains { $0.hasPrefix("Label_") } }
 
     /// 只用磁盘缓存 seed 显示，立即返回（不联网）。返回是否命中缓存。
     /// 拆出这一步是为了让调用方在缓存命中后能「立刻」展开正文，
