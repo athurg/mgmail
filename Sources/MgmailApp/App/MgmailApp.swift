@@ -21,7 +21,15 @@ struct MgmailApp: App {
         .commands {
             SidebarCommands()
             // 账号已在「设置」里统一管理，不再单独开菜单。
+            // 「活动」窗口由下面的 Window 场景自动出现在「窗口」菜单里（⌘0）。
         }
+
+        // 网络活动日志（仿 Apple Mail 的「活动」窗口，⌘0）。单例窗口，不跟主窗口走。
+        Window("活动", id: ActivityWindow.id) {
+            ActivityLogView()
+        }
+        .defaultSize(width: 860, height: 460)
+        .keyboardShortcut("0", modifiers: .command)
 
         Settings {
             SettingsView()
@@ -36,16 +44,21 @@ struct RootView: View {
     @EnvironmentObject private var appState: AppState
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-        } content: {
-            ThreadListView()
-                .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 520)
-        } detail: {
-            MessageDetailView()
+        VStack(spacing: 0) {
+            NavigationSplitView {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
+            } content: {
+                ThreadListView()
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 520)
+            } detail: {
+                MessageDetailView()
+            }
+            // 标题挂在分栏视图自己身上：外面套了 VStack 之后，它不再是窗口的根视图
+            .navigationTitle("Mgmail")
+            // 横贯整个窗口底部的网络活动栏（没有活动时不占位）
+            ActivityStatusBar()
         }
-        .navigationTitle("Mgmail")
         .sheet(isPresented: Binding(
             get: { !appState.hasOAuthConfig },
             set: { _ in }

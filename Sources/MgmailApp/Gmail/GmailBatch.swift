@@ -67,7 +67,9 @@ extension GmailAPI {
             url: URL(string: "https://gmail.googleapis.com/batch/gmail/v1")!,
             method: "POST",
             body: body,
-            contentType: "multipart/mixed; boundary=\(boundary)"
+            contentType: "multipart/mixed; boundary=\(boundary)",
+            // 批量请求的 URL 都一样，看不出内容，得由子请求来说明
+            activity: .batch(items)
         )
         return Self.parseBatchResponse(data)
     }
