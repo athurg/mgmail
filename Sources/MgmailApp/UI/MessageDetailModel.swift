@@ -42,6 +42,8 @@ final class MessageDetailModel: ObservableObject {
 
     private(set) var account: String?
     private(set) var threadID: String?
+    /// 是否按会话显示；false 时 `threadID` 实为 messageId，只加载这一封。
+    private(set) var conversation = true
 
     var isUnread: Bool { threadLabelIds.contains("UNREAD") }
     var isStarred: Bool { threadLabelIds.contains("STARRED") }
@@ -51,13 +53,14 @@ final class MessageDetailModel: ObservableObject {
     /// 拆出这一步是为了让调用方在缓存命中后能「立刻」展开正文，
     /// 而不必等后面的联网刷新完成（否则正文卡片会白等几秒才展开）。
     @discardableResult
-    func seedFromCache(account: String, threadID: String) async -> Bool {
+    func seedFromCache(account: String, threadID: String, conversation: Bool) async -> Bool {
         self.account = account
         self.threadID = threadID
+        self.conversation = conversation
         loadError = nil
 
         // 先从缓存 seed（瞬时显示，含已内联的图片）
-        if let cached = await MailCache.shared.thread(account: account, threadID: threadID) {
+        if let cached = await MailCache.shared.thread(account: account, threadID: threadID, conversation: conversation) {
             guard self.threadID == threadID else { return false }
             messages = cached.messages
             subject = cached.subject
@@ -81,10 +84,15 @@ final class MessageDetailModel: ObservableObject {
     /// 内联图片按 消息+附件 id 缓存，不再每次打开都重下大图。
     private func refreshFromServer(account: String, threadID: String) async {
         do {
-            let thread = try await GmailAPI(account: account).getThread(id: threadID, format: "full")
+            let api = GmailAPI(account: account)
+            let raw: [GmailMessage]
+            if conversation {
+                raw = try await api.getThread(id: threadID, format: "full").messages ?? []
+            } else {
+                raw = [try await api.getMessage(id: threadID, format: "full")]
+            }
             guard self.threadID == threadID else { return } // 期间已切换
 
-            let raw = thread.messages ?? []
             var rendered = raw.map { Self.render($0) }
             rendered = await resolveInline(rendered, rawMessages: raw, account: account, threadID: threadID)
             guard self.threadID == threadID else { return }
@@ -105,7 +113,7 @@ final class MessageDetailModel: ObservableObject {
     /// 把当前渲染结果写入磁盘缓存。
     private func saveCache(account: String, threadID: String) async {
         let cached = CachedThread(subject: subject, messages: messages, threadLabelIds: Array(threadLabelIds))
-        await MailCache.shared.saveThread(cached, account: account, threadID: threadID)
+        await MailCache.shared.saveThread(cached, account: account, threadID: threadID, conversation: conversation)
     }
 
     /// 把正文里的 `cid:` 内联图片替换为 data URI；优先用缓存，缺失才下载并缓存。
@@ -143,7 +151,12 @@ final class MessageDetailModel: ObservableObject {
     /// 应用一次标签增删；modify 本身失败会抛错给调用方，之后尽力刷新并写缓存。
     func modify(add: [String] = [], remove: [String] = []) async throws {
         guard let account, let threadID else { return }
-        try await GmailAPI(account: account).modifyThread(id: threadID, add: add, remove: remove)
+        let api = GmailAPI(account: account)
+        if conversation {
+            try await api.modifyThread(id: threadID, add: add, remove: remove)
+        } else {
+            try await api.modifyMessage(id: threadID, add: add, remove: remove)
+        }
         await refreshFromServer(account: account, threadID: threadID)
     }
 

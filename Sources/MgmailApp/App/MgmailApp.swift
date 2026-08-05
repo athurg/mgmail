@@ -15,14 +15,7 @@ struct MgmailApp: App {
         .windowStyle(.titleBar)
         .commands {
             SidebarCommands()
-            CommandMenu("账号") {
-                SettingsLink {
-                    Text("账号与分组…")
-                }
-                .keyboardShortcut(",", modifiers: [.command, .shift])
-                Button(appState.isSigningIn ? "重新开始添加账号…" : "添加账号…") { appState.addAccount() }
-                    .disabled(!appState.hasOAuthConfig)
-            }
+            // 账号已在「设置」里统一管理，不再单独开菜单。
         }
 
         Settings {
