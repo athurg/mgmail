@@ -36,9 +36,11 @@ struct MessageDetailView: View {
             get: { actionError != nil }, set: { if !$0 { actionError = nil } }
         )) { Button("好", role: .cancel) {} } message: { Text(actionError ?? "") }
         .task(id: taskKey) { await reload() }
-        // 池子里这串会话多了邮件（同步拿回来的新回复）才需要重取正文
-        .onChange(of: model.messageIDs) { old, new in
-            guard !old.isEmpty, new.count > old.count else { return }
+        // 池子里这串会话多了邮件（同步拿回来的新回复）才需要重取正文。
+        // 必须连 threadID 一起比：只比条数的话，从一封单邮件切到一串多邮件会话
+        // 也会被当成「来了新回复」，于是每次切回来都白拉一遍整串正文和内联图。
+        .onChange(of: threadMessageCount) { old, new in
+            guard old.threadID == new.threadID, old.count > 0, new.count > old.count else { return }
             Task {
                 await model.reloadBody()
                 applyDefaultExpansion()
@@ -110,6 +112,16 @@ struct MessageDetailView: View {
 
     private var taskKey: String {
         "\(appState.singleSelection?.accountID ?? "")|\(appState.singleSelection?.threadID ?? "")|\(conversationView)"
+    }
+
+    /// 「当前这串会话在池子里有几封」。带上会话 id，换了会话就不是同一个计数了。
+    private struct ThreadMessageCount: Equatable {
+        let threadID: String
+        let count: Int
+    }
+
+    private var threadMessageCount: ThreadMessageCount {
+        ThreadMessageCount(threadID: model.threadID ?? "", count: model.messageIDs.count)
     }
 
     private var content: some View {
