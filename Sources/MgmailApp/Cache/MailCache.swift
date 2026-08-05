@@ -30,6 +30,16 @@ actor MailCache {
         save(labels, account: account, kind: "labels", key: "labels")
     }
 
+    // MARK: - 增量同步位点
+
+    /// 上次同步到的 historyId。下次从这里继续拉变化。
+    func historyID(account: String) -> String? {
+        load(String.self, account: account, kind: "sync", key: "historyId")
+    }
+    func saveHistoryID(_ id: String, account: String) {
+        save(id, account: account, kind: "sync", key: "historyId")
+    }
+
     // MARK: - 会话列表摘要（每个邮箱一份，缓存首屏）
 
     func summaries(account: String, labelID: String) -> [ThreadSummary]? {

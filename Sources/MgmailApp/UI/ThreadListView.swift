@@ -13,6 +13,8 @@ struct ThreadListView: View {
     @ObservedObject private var rows = ThreadRowCoordinator.shared
     /// 拖拽状态：只有列表和侧栏订阅它，拖动时不会连累详情栏重绘。
     @ObservedObject private var drag = DragMonitor.shared
+    /// 后台增量同步的节奏控制。
+    @StateObject private var sync = SyncScheduler()
 
     private var readFilter: ReadFilter { ReadFilter(rawValue: readFilterRaw) ?? .all }
 
@@ -57,21 +59,32 @@ struct ThreadListView: View {
         .navigationTitle(appState.selection?.labelName ?? "收件箱")
         .toolbar {
             ToolbarItem {
-                if model.isLoading {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button { Task { await reload() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .help("刷新")
-                    .disabled(appState.selection == nil)
+                // 手动刷新走增量同步：没变化时只是一个 history.list，比重拉整页省得多。
+                // 忙碌时不换成 ProgressView，而是原地把图标换成转圈——
+                // 换控件会让按钮尺寸变化，工具栏跟着跳一下。
+                let busy = model.isLoading || sync.isSyncing
+                Button { Task { await sync.syncNow() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .opacity(busy ? 0 : 1)
+                        .overlay {
+                            if busy { ProgressView().controlSize(.small) }
+                        }
                 }
+                .help(refreshHelp)
+                .disabled(busy || appState.selection == nil)
             }
             ToolbarItem { filterMenu }
         }
         .task(id: reloadKey) {
             // 首次加载、选择变化、或切换会话/单封显示方式时重新加载
             await reload()
+        }
+        .task {
+            // 定时 + 回到 app 时增量同步。账号每次现取，分组切换后自动跟上。
+            sync.start(accounts: { model.loadedAccounts }) { account in
+                let outcome = await MailSync.incremental(account: account)
+                await model.applySync(outcome, account: account)
+            }
         }
         .onChange(of: conversationView) { _, _ in
             // 两种模式的行 id 语义不同（threadId ↔ messageId），旧选择必须清空
@@ -80,6 +93,11 @@ struct ThreadListView: View {
         }
         .onChange(of: appState.lastThreadChange) { _, change in
             guard let change else { return }
+            // 变更内容已知就本地算，不必回头问服务器
+            if change.isLabelChange {
+                model.applyLocalLabelChange(change.items, add: change.add, remove: change.remove)
+                return
+            }
             Task {
                 for item in change.items {
                     await model.refreshRow(account: item.accountID, id: item.threadID)
@@ -206,6 +224,14 @@ struct ThreadListView: View {
         .menuIndicator(.visible)
         .help(readFilter == .all ? "只看未读" : "过滤：\(readFilter.title)")
         .disabled(appState.selection == nil)
+    }
+
+    /// 刷新按钮的提示：带上次同步时间，让「有没有在同步」可见。
+    private var refreshHelp: String {
+        guard let at = sync.lastSyncedAt else { return "刷新" }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return "刷新（上次同步 \(f.string(from: at))）"
     }
 
     private var emptyTitle: String {

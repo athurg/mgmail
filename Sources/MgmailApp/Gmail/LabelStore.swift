@@ -80,22 +80,20 @@ final class LabelStore: ObservableObject {
         }
     }
 
-    /// 对缺少颜色的用户标签并发 get 补齐 color。
+    /// 对缺少颜色的用户标签补齐 color。
+    /// labels.list 不返回颜色，只能逐个 get；用 batch 合成一次往返，
+    /// 否则首次加载一个有几十个标签的账号就是几十个请求。
     private func enrichColors(_ labels: [GmailLabel], api: GmailAPI) async -> [GmailLabel] {
         let needIDs = labels.filter { !$0.isSystem && $0.color == nil }.map(\.id)
         guard !needIDs.isEmpty else { return labels }
 
-        var colorMap: [String: LabelColor] = [:]
-        await withTaskGroup(of: (String, LabelColor?).self) { group in
-            for id in needIDs {
-                group.addTask { (id, try? await api.getLabel(id: id).color) }
-            }
-            for await (id, color) in group where color != nil {
-                colorMap[id] = color
-            }
-        }
+        let items = needIDs.map { BatchItem(id: $0, path: "/labels/\($0)") }
+        guard let responses = try? await api.batchGet(items) else { return labels }
+
         return labels.map { label in
-            guard let color = colorMap[label.id] else { return label }
+            guard let result = responses[label.id], result.isSuccess,
+                  let fresh = try? JSONDecoder().decode(GmailLabel.self, from: result.body),
+                  let color = fresh.color else { return label }
             return label.withColor(color)
         }
     }

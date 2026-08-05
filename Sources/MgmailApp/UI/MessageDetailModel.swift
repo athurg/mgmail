@@ -27,6 +27,13 @@ struct RenderedMessage: Codable, Identifiable {
                         subject: subject, bodyHTML: html, attachments: attachments, isUnread: isUnread,
                         snippet: snippet)
     }
+
+    /// 返回改了未读状态的副本。
+    func withUnread(_ unread: Bool) -> RenderedMessage {
+        RenderedMessage(id: id, fromName: fromName, fromEmail: fromEmail, to: to, date: date,
+                        subject: subject, bodyHTML: bodyHTML, attachments: attachments, isUnread: unread,
+                        snippet: snippet)
+    }
 }
 
 /// 加载并渲染某个会话的全部邮件。
@@ -150,7 +157,11 @@ final class MessageDetailModel: ObservableObject {
 
     // MARK: - 修改（读/星标/归档/标签）
 
-    /// 应用一次标签增删；modify 本身失败会抛错给调用方，之后尽力刷新并写缓存。
+    /// 应用一次标签增删；modify 本身失败会抛错给调用方。
+    ///
+    /// 成功后只在本地更新标签集合，不再回头全量重拉。
+    /// 之前每加一个标签都要把整串会话连正文带内联图片重新拉一遍，
+    /// 而我们要的信息不过是「标签集合变了」——那是本地就能算出来的。
     func modify(add: [String] = [], remove: [String] = []) async throws {
         guard let account, let threadID else { return }
         let api = GmailAPI(account: account)
@@ -159,7 +170,16 @@ final class MessageDetailModel: ObservableObject {
         } else {
             try await api.modifyMessage(id: threadID, add: add, remove: remove)
         }
-        await refreshFromServer(account: account, threadID: threadID)
+
+        threadLabelIds.formUnion(add)
+        threadLabelIds.subtract(remove)
+        // 未读状态影响卡片上的小圆点，跟着一起改
+        if remove.contains("UNREAD") {
+            messages = messages.map { $0.withUnread(false) }
+        } else if add.contains("UNREAD") {
+            messages = messages.map { $0.withUnread(true) }
+        }
+        await saveCache(account: account, threadID: threadID)
     }
 
     func setUnread(_ unread: Bool) async throws {
