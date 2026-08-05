@@ -44,6 +44,12 @@ final class LabelStore: ObservableObject {
             .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
     }
 
+    /// 该账户实际存在的收件箱分类标签（按 `MailCategory.all` 的固定顺序）。
+    func categories(for account: String) -> [MailCategory] {
+        let ids = Set(labels(for: account).map(\.id))
+        return MailCategory.all.filter { ids.contains($0.id) }
+    }
+
     /// 正在网络刷新的账户，避免并发重复拉取。
     private var revalidating: Set<String> = []
 
@@ -118,6 +124,7 @@ final class LabelStore: ObservableObject {
     /// 由 labelId 找显示名（系统标签给中文名）。
     func displayName(for account: String, labelID: String) -> String {
         if let known = StandardMailbox.all.first(where: { $0.id == labelID }) { return known.name }
+        if let category = MailCategory.all.first(where: { $0.id == labelID }) { return category.name }
         return labels(for: account).first { $0.id == labelID }?.name ?? labelID
     }
 }
