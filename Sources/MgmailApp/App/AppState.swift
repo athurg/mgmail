@@ -68,16 +68,16 @@ final class AppState: ObservableObject {
     /// 正在编辑/新建的标签（驱动标签编辑面板）。
     @Published var labelEditTarget: LabelEditTarget?
 
-    /// 广播某会话发生了变化。
-    func threadDidChange(account: String, id: String) {
-        threadsDidChange([SelectedThread(accountID: account, threadID: id)])
+    /// 广播某会话发生了变化。已知标签增删时一并带上，收到方就能免去一次网络确认。
+    func threadDidChange(account: String, id: String, add: [String] = [], remove: [String] = []) {
+        threadsDidChange([SelectedThread(accountID: account, threadID: id)], add: add, remove: remove)
     }
 
     /// 广播一批会话发生了变化（批量打标签等）。
-    func threadsDidChange(_ items: [SelectedThread]) {
+    func threadsDidChange(_ items: [SelectedThread], add: [String] = [], remove: [String] = []) {
         guard !items.isEmpty else { return }
         changeToken += 1
-        lastThreadChange = ThreadChange(items: items, token: changeToken)
+        lastThreadChange = ThreadChange(items: items, add: add, remove: remove, token: changeToken)
     }
 
     /// 请求删除某封邮件/会话（由中栏列表实际执行）。
@@ -319,9 +319,17 @@ struct SelectedThreadInfo: Hashable {
 }
 
 /// 会话变更事件（可含多条，供批量打标签后一次性刷新）。
+///
+/// 带上具体的标签增删后，列表可以本地算出新状态，
+/// 不必为每一行再 get 一次去确认「我们本来就知道的结果」。
 struct ThreadChange: Equatable {
     let items: [SelectedThread]
+    let add: [String]
+    let remove: [String]
     let token: Int
+
+    /// 变更内容已知，收到方可以本地更新。
+    var isLabelChange: Bool { !add.isEmpty || !remove.isEmpty }
 }
 
 /// 由详情栏发起、交给列表执行的操作请求。

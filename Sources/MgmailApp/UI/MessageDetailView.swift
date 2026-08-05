@@ -43,15 +43,27 @@ struct MessageDetailView: View {
     private var toolbarItems: some ToolbarContent {
         ToolbarItem {
             ControlGroup {
-                Button { run { try await model.archive() } } label: {
+                Button {
+                    run(remove: ["INBOX"]) { try await model.archive() }
+                } label: {
                     Image(systemName: "archivebox")
                 }.help("归档（移出收件箱）").disabled(!model.isInInbox)
 
-                Button { run { try await model.setUnread(!model.isUnread) } } label: {
+                Button {
+                    let unread = !model.isUnread
+                    run(add: unread ? ["UNREAD"] : [], remove: unread ? [] : ["UNREAD"]) {
+                        try await model.setUnread(unread)
+                    }
+                } label: {
                     Image(systemName: model.isUnread ? "envelope.badge" : "envelope.open")
                 }.help(model.isUnread ? "标记为已读" : "标记为未读")
 
-                Button { run { try await model.toggleStar() } } label: {
+                Button {
+                    let starred = model.isStarred
+                    run(add: starred ? [] : ["STARRED"], remove: starred ? ["STARRED"] : []) {
+                        try await model.toggleStar()
+                    }
+                } label: {
                     Image(systemName: model.isStarred ? "star.fill" : "star")
                         .foregroundStyle(model.isStarred ? .yellow : .secondary)
                 }.help(model.isStarred ? "取消星标" : "加星标")
@@ -68,7 +80,7 @@ struct MessageDetailView: View {
             }.help("标签")
             .popover(isPresented: $showLabelPopover) {
                 LabelEditorView(account: model.account ?? "", detail: model,
-                                onChange: { broadcast() },
+                                onChange: { add, remove in broadcast(add: add, remove: remove) },
                                 onClose: { showLabelPopover = false })
             }
         }
@@ -80,21 +92,23 @@ struct MessageDetailView: View {
         appState.requestTrash(account: account, id: id)
     }
 
-    /// 执行一个修改操作，成功后广播变更。
-    private func run(_ block: @escaping () async throws -> Void) {
+    /// 执行一个修改操作，成功后把「改了什么」一并广播出去，
+    /// 列表据此本地更新即可，不必再为这一行发一次网络请求确认。
+    private func run(add: [String] = [], remove: [String] = [],
+                     _ block: @escaping () async throws -> Void) {
         Task {
             do {
                 try await block()
-                broadcast()
+                broadcast(add: add, remove: remove)
             } catch {
                 actionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }
     }
 
-    private func broadcast() {
+    private func broadcast(add: [String] = [], remove: [String] = []) {
         if let account = model.account, let id = model.threadID {
-            appState.threadDidChange(account: account, id: id)
+            appState.threadDidChange(account: account, id: id, add: add, remove: remove)
         }
     }
 
@@ -159,7 +173,7 @@ struct MessageDetailView: View {
         // 打开即标记已读，并广播让列表更新未读点
         if model.isUnread {
             await model.markReadOnOpenIfNeeded()
-            broadcast()
+            broadcast(remove: ["UNREAD"])
         }
     }
 }
