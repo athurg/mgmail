@@ -4,6 +4,7 @@ import AppKit
 /// 右栏：会话/邮件详情。
 struct MessageDetailView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var mailStore: MailStore
     @StateObject private var model = MessageDetailModel()
     @State private var showLabelPopover = false
     @State private var actionError: String?
@@ -35,6 +36,14 @@ struct MessageDetailView: View {
             get: { actionError != nil }, set: { if !$0 { actionError = nil } }
         )) { Button("好", role: .cancel) {} } message: { Text(actionError ?? "") }
         .task(id: taskKey) { await reload() }
+        // 池子里这串会话多了邮件（同步拿回来的新回复）才需要重取正文
+        .onChange(of: model.messageIDs) { old, new in
+            guard !old.isEmpty, new.count > old.count else { return }
+            Task {
+                await model.reloadBody()
+                applyDefaultExpansion()
+            }
+        }
     }
 
     /// 工具栏分两组：① 邮件操作（归档、已读未读、星标、删除）② 标签。
@@ -44,25 +53,20 @@ struct MessageDetailView: View {
         ToolbarItem {
             ControlGroup {
                 Button {
-                    run(remove: ["INBOX"]) { try await model.archive() }
+                    run { try await model.archive() }
                 } label: {
                     Image(systemName: "archivebox")
                 }.help("归档（移出收件箱）").disabled(!model.isInInbox)
 
                 Button {
                     let unread = !model.isUnread
-                    run(add: unread ? ["UNREAD"] : [], remove: unread ? [] : ["UNREAD"]) {
-                        try await model.setUnread(unread)
-                    }
+                    run { try await model.setUnread(unread) }
                 } label: {
                     Image(systemName: model.isUnread ? "envelope.badge" : "envelope.open")
                 }.help(model.isUnread ? "标记为已读" : "标记为未读")
 
                 Button {
-                    let starred = model.isStarred
-                    run(add: starred ? [] : ["STARRED"], remove: starred ? ["STARRED"] : []) {
-                        try await model.toggleStar()
-                    }
+                    run { try await model.toggleStar() }
                 } label: {
                     Image(systemName: model.isStarred ? "star.fill" : "star")
                         .foregroundStyle(model.isStarred ? .yellow : .secondary)
@@ -80,7 +84,6 @@ struct MessageDetailView: View {
             }.help("标签")
             .popover(isPresented: $showLabelPopover) {
                 LabelEditorView(account: model.account ?? "", detail: model,
-                                onChange: { add, remove in broadcast(add: add, remove: remove) },
                                 onClose: { showLabelPopover = false })
             }
         }
@@ -92,23 +95,16 @@ struct MessageDetailView: View {
         appState.requestTrash(account: account, id: id)
     }
 
-    /// 执行一个修改操作，成功后把「改了什么」一并广播出去，
-    /// 列表据此本地更新即可，不必再为这一行发一次网络请求确认。
-    private func run(add: [String] = [], remove: [String] = [],
-                     _ block: @escaping () async throws -> Void) {
+    /// 执行一个修改操作。
+    ///
+    /// 不需要通知任何人：改的是池子里的标签，列表看的是同一份数据，自己就更新了。
+    private func run(_ block: @escaping () async throws -> Void) {
         Task {
             do {
                 try await block()
-                broadcast(add: add, remove: remove)
             } catch {
                 actionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
-        }
-    }
-
-    private func broadcast(add: [String] = [], remove: [String] = []) {
-        if let account = model.account, let id = model.threadID {
-            appState.threadDidChange(account: account, id: id, add: add, remove: remove)
         }
     }
 
@@ -130,6 +126,7 @@ struct MessageDetailView: View {
                         message: message,
                         account: model.account ?? "",
                         isExpanded: expanded.contains(message.id),
+                        isUnread: model.isUnread(message.id),
                         onToggle: { toggle(message.id) }
                     )
                     .padding(.horizontal)
@@ -139,7 +136,7 @@ struct MessageDetailView: View {
         }
     }
 
-    /// 切换单封邮件的展开/折叠。
+    /// 切换单封邮件的展开/折叠。正文早就在手里了，纯本地。
     private func toggle(_ id: String) {
         withAnimation(.easeInOut(duration: 0.2)) {
             if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
@@ -147,7 +144,7 @@ struct MessageDetailView: View {
     }
 
     /// 会话加载后设定默认展开：多封时展开未读邮件；若全已读，只展开最新一封；单封则直接展开。
-    /// 仅当消息 id 集合相较上次发生变化时才重新计算，避免联网刷新后覆盖用户已手动调整的展开状态。
+    /// 仅当消息 id 集合相较上次发生变化时才重新计算，避免覆盖用户已手动调整的展开状态。
     private func applyDefaultExpansion() {
         let msgs = model.messages
         guard !msgs.isEmpty else { expanded = []; expansionBasis = []; return }
@@ -155,26 +152,20 @@ struct MessageDetailView: View {
         guard ids != expansionBasis else { return }
         expansionBasis = ids
         if msgs.count == 1 { expanded = [msgs[0].id]; return }
-        let unread = msgs.filter(\.isUnread).map(\.id)
+        let unread = msgs.filter { model.isUnread($0.id) }.map(\.id)
         expanded = unread.isEmpty ? Set([msgs.last!.id]) : Set(unread)
     }
 
     private func reload() async {
         guard let selected = appState.singleSelection else { return }
-        // 切换会话：先清掉旧的展开依据，保证下面 seed 命中后一定重算展开。
         expansionBasis = []
-        // 1) 先只读缓存并立即展开正文（命中时无需等联网，正文瞬时可见）。
-        await model.seedFromCache(account: selected.accountID, threadID: selected.threadID,
-                                  conversation: conversationView)
+        model.bind(to: mailStore)
+        // 正文不可变：缓存有就直接显示，没有才拉一次。
+        await model.open(account: selected.accountID, threadID: selected.threadID,
+                         conversation: conversationView)
         applyDefaultExpansion()
-        // 2) 再联网增量刷新；仅当消息集合变化时才会再次调整展开。
-        await model.refresh(account: selected.accountID, threadID: selected.threadID)
-        applyDefaultExpansion()
-        // 打开即标记已读，并广播让列表更新未读点
-        if model.isUnread {
-            await model.markReadOnOpenIfNeeded()
-            broadcast(remove: ["UNREAD"])
-        }
+        // 打开即标记已读（改的是池子里的标签，列表跟着一起变）
+        await model.markReadOnOpenIfNeeded()
     }
 }
 
@@ -183,13 +174,26 @@ struct MessageCard: View {
     let message: RenderedMessage
     let account: String
     let isExpanded: Bool
+    /// 未读状态来自池子，不存在卡片自己身上。
+    let isUnread: Bool
     let onToggle: () -> Void
 
-    @State private var webHeight: CGFloat = 40
+    @State private var webHeight: CGFloat
+
+    init(message: RenderedMessage, account: String, isExpanded: Bool,
+         isUnread: Bool, onToggle: @escaping () -> Void) {
+        self.message = message
+        self.account = account
+        self.isExpanded = isExpanded
+        self.isUnread = isUnread
+        self.onToggle = onToggle
+        // 用上次量到的高度起步，正文一出现就是对的尺寸，不会先塌成一条再撑开
+        _webHeight = State(initialValue: MessageBodyLayout.height(for: message.id))
+    }
     /// 用户在本封邮件里手动点击「加载远程内容」后置为 true。
     @State private var showRemote = false
-    /// 全局设置：是否默认加载远程内容。默认开启。
-    @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = true
+    /// 全局设置：是否默认加载远程内容。默认关闭。
+    @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = false
 
     /// 本封邮件最终是否加载远程内容：全局默认开启，或用户手动加载过。
     private var remoteEnabled: Bool { loadRemoteByDefault || showRemote }
@@ -203,7 +207,8 @@ struct MessageCard: View {
                     if showsRemoteBanner {
                         remoteBanner
                     }
-                    MessageWebView(html: message.bodyHTML, blockRemote: !remoteEnabled, height: $webHeight)
+                    MessageWebView(html: message.bodyHTML, blockRemote: !remoteEnabled,
+                                   messageID: message.id, height: $webHeight)
                         .frame(height: webHeight)
                     if !message.attachments.isEmpty {
                         attachmentsView
@@ -227,7 +232,7 @@ struct MessageCard: View {
             avatar
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    if message.isUnread {
+                    if isUnread {
                         Circle().fill(Color.accentColor).frame(width: 7, height: 7)
                     }
                     Text(message.fromName).fontWeight(.semibold)
@@ -268,7 +273,8 @@ struct MessageCard: View {
 
     private var showsRemoteBanner: Bool {
         // 仅在实际处于阻止状态、且正文含 http(s) 资源引用时，提示可加载远程内容。
-        !remoteEnabled && (message.bodyHTML.contains("http://") || message.bodyHTML.contains("https://"))
+        guard !remoteEnabled else { return false }
+        return message.bodyHTML.contains("http://") || message.bodyHTML.contains("https://")
     }
 
     private var remoteBanner: some View {
