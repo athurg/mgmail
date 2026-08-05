@@ -24,28 +24,32 @@ struct ThreadSummary: Codable, Identifiable, Hashable {
 struct MailboxQuery {
     let apiLabelID: String?
     let includeSpamTrash: Bool
-    let stillBelongs: (GmailThread) -> Bool
+    /// 单封邮件是否仍属于该邮箱。
+    let messageBelongs: (GmailMessage) -> Bool
+
+    /// 会话只要有一封邮件仍属于该邮箱就保留。
+    func stillBelongs(_ thread: GmailThread) -> Bool {
+        (thread.messages ?? []).contains(where: messageBelongs)
+    }
 
     static func resolve(labelID: String) -> MailboxQuery {
         if let box = StandardMailbox.all.first(where: { $0.id == labelID }) {
             if box.id == StandardMailbox.allMailID {
                 // 所有邮件：不按标签过滤，且排除垃圾/废纸篓
-                return MailboxQuery(apiLabelID: nil, includeSpamTrash: false) { thread in
-                    (thread.messages ?? []).contains { m in
-                        let l = m.labelIds ?? []
-                        return !l.contains("TRASH") && !l.contains("SPAM")
-                    }
+                return MailboxQuery(apiLabelID: nil, includeSpamTrash: false) { m in
+                    let l = m.labelIds ?? []
+                    return !l.contains("TRASH") && !l.contains("SPAM")
                 }
             }
             let apiID = box.apiLabelID
-            return MailboxQuery(apiLabelID: apiID, includeSpamTrash: box.includeSpamTrash) { thread in
+            return MailboxQuery(apiLabelID: apiID, includeSpamTrash: box.includeSpamTrash) { m in
                 guard let apiID else { return true }
-                return (thread.messages ?? []).contains { ($0.labelIds ?? []).contains(apiID) }
+                return (m.labelIds ?? []).contains(apiID)
             }
         }
         // 用户自定义标签
-        return MailboxQuery(apiLabelID: labelID, includeSpamTrash: false) { thread in
-            (thread.messages ?? []).contains { ($0.labelIds ?? []).contains(labelID) }
+        return MailboxQuery(apiLabelID: labelID, includeSpamTrash: false) { m in
+            (m.labelIds ?? []).contains(labelID)
         }
     }
 }
@@ -68,6 +72,13 @@ final class ThreadListModel: ObservableObject {
     private var cacheKey: String = ""
     private var cursors: [String: AccountCursor] = [:]
     private var generation = 0
+    /// 是否按会话显示；false 时每行是一封独立邮件，行 id 为 messageId。
+    private(set) var conversation = true
+
+    /// 列表缓存的文件名 key：两种模式的行 id 语义不同，必须分开存。
+    private var cacheLabelKey: String {
+        conversation ? labelID : labelID + "__messages"
+    }
 
     /// 还有账号可以继续翻页。
     var hasMore: Bool {
@@ -75,17 +86,18 @@ final class ThreadListModel: ObservableObject {
     }
 
     /// 加载指定邮箱（accounts 多个即聚合）：先用缓存 seed，再后台拉最新（SWR）。
-    func load(accounts: [String], labelID: String) async {
+    func load(accounts: [String], labelID: String, conversation: Bool) async {
         generation += 1
         let gen = generation
         accountsToLoad = accounts
         self.labelID = labelID
+        self.conversation = conversation
         boxQuery = MailboxQuery.resolve(labelID: labelID)
         cacheKey = accounts.count == 1 ? accounts[0] : "__all__"
         cursors = [:]
         loadError = nil
 
-        if let cached = await MailCache.shared.summaries(account: cacheKey, labelID: labelID) {
+        if let cached = await MailCache.shared.summaries(account: cacheKey, labelID: cacheLabelKey) {
             guard gen == generation else { return }
             summaries = cached
         } else {
@@ -119,15 +131,23 @@ final class ThreadListModel: ObservableObject {
 
         let apiLabelID = boxQuery.apiLabelID
         let includeSpamTrash = boxQuery.includeSpamTrash
+        let byConversation = conversation
         let results = await withTaskGroup(of: FetchResult.self) { group -> [FetchResult] in
             for (acc, token) in toFetch {
                 group.addTask {
                     let api = GmailAPI(account: acc)
                     do {
-                        let list = try await api.listThreads(labelId: apiLabelID, query: nil,
-                                                             pageToken: token, includeSpamTrash: includeSpamTrash)
-                        let details = try await Self.fetchSummaries(refs: list.threads ?? [], api: api, account: acc)
-                        return FetchResult(account: acc, summaries: details, nextToken: list.nextPageToken, failed: false)
+                        if byConversation {
+                            let list = try await api.listThreads(labelId: apiLabelID, query: nil,
+                                                                 pageToken: token, includeSpamTrash: includeSpamTrash)
+                            let details = try await Self.fetchSummaries(refs: list.threads ?? [], api: api, account: acc)
+                            return FetchResult(account: acc, summaries: details, nextToken: list.nextPageToken, failed: false)
+                        } else {
+                            let list = try await api.listMessages(labelId: apiLabelID, query: nil,
+                                                                  pageToken: token, includeSpamTrash: includeSpamTrash)
+                            let details = try await Self.fetchMessageSummaries(refs: list.messages ?? [], api: api, account: acc)
+                            return FetchResult(account: acc, summaries: details, nextToken: list.nextPageToken, failed: false)
+                        }
                     } catch {
                         return FetchResult(account: acc, summaries: [], nextToken: nil, failed: true)
                     }
@@ -153,39 +173,48 @@ final class ThreadListModel: ObservableObject {
             // 至少一个账号成功才覆盖；全失败则保留缓存内容
             if failures < results.count {
                 summaries = merged
-                await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: labelID)
+                await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: cacheLabelKey)
             } else if summaries.isEmpty {
                 loadError = "加载失败，请重试"
             }
         } else {
             summaries = merged
-            await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: labelID)
+            await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: cacheLabelKey)
         }
     }
 
-    /// 某会话被修改后，重新拉取该行；若已不属于当前邮箱则移除。
+    /// 某会话/邮件被修改后，重新拉取该行；若已不属于当前邮箱则移除。
     func refreshRow(account: String, id: String) async {
         guard summaries.contains(where: { $0.id == id && $0.accountID == account }) else { return }
-        let label = labelID
+        let key = cacheLabelKey
+        let headers = ["From", "To", "Subject", "Date"]
         let api = GmailAPI(account: account)
-        guard let thread = try? await api.getThread(id: id, format: "metadata",
-                                                    metadataHeaders: ["From", "To", "Subject", "Date"]) else { return }
-        guard let idx = summaries.firstIndex(where: { $0.id == id && $0.accountID == account }) else { return }
 
-        let stillHere = boxQuery.stillBelongs(thread)
-        if stillHere {
-            summaries[idx] = Self.summarize(thread: thread, fallbackSnippet: summaries[idx].snippet, account: account)
+        let fresh: (summary: ThreadSummary, belongs: Bool)?
+        if conversation {
+            guard let thread = try? await api.getThread(id: id, format: "metadata", metadataHeaders: headers),
+                  let old = summaries.first(where: { $0.id == id && $0.accountID == account }) else { return }
+            fresh = (Self.summarize(thread: thread, fallbackSnippet: old.snippet, account: account),
+                     boxQuery.stillBelongs(thread))
+        } else {
+            guard let message = try? await api.getMessage(id: id, format: "metadata", metadataHeaders: headers) else { return }
+            fresh = (Self.summarize(message: message, account: account), boxQuery.messageBelongs(message))
+        }
+        guard let fresh, let idx = summaries.firstIndex(where: { $0.id == id && $0.accountID == account }) else { return }
+
+        if fresh.belongs {
+            summaries[idx] = fresh.summary
         } else {
             summaries.remove(at: idx)
         }
-        await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: label)
+        await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: key)
     }
 
     /// 删除（移入废纸篓）：立即从列表移除，再调用 API。
     func trash(account: String, id: String) async {
         removeRow(account: account, id: id)
         do {
-            try await GmailAPI(account: account).trashThread(id: id)
+            try await self.trashRemote(account: account, id: id)
         } catch {
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             await refreshRow(account: account, id: id) // 失败则以服务器状态为准
@@ -195,7 +224,8 @@ final class ThreadListModel: ObservableObject {
     private func removeRow(account: String, id: String) {
         if let idx = summaries.firstIndex(where: { $0.id == id && $0.accountID == account }) {
             summaries.remove(at: idx)
-            Task { await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: labelID) }
+            let key = cacheLabelKey
+            Task { await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: key) }
         }
     }
 
@@ -206,19 +236,35 @@ final class ThreadListModel: ObservableObject {
                 summaries.remove(at: idx)
             }
         }
-        await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: labelID)
+        await MailCache.shared.saveSummaries(summaries, account: cacheKey, labelID: cacheLabelKey)
+        let byConversation = conversation
         await withTaskGroup(of: Void.self) { group in
             for k in keys {
-                group.addTask { try? await GmailAPI(account: k.accountID).trashThread(id: k.threadID) }
+                group.addTask {
+                    let api = GmailAPI(account: k.accountID)
+                    if byConversation {
+                        try? await api.trashThread(id: k.threadID)
+                    } else {
+                        try? await api.trashMessage(id: k.threadID)
+                    }
+                }
             }
         }
     }
 
     /// 批量增删标签（归档 = 去 INBOX；已读 = 去 UNREAD；旗标 = 加 STARRED）。
     func mutateMany(_ keys: [SelectedThread], add: [String] = [], remove: [String] = []) async {
+        let byConversation = conversation
         await withTaskGroup(of: Void.self) { group in
             for k in keys {
-                group.addTask { try? await GmailAPI(account: k.accountID).modifyThread(id: k.threadID, add: add, remove: remove) }
+                group.addTask {
+                    let api = GmailAPI(account: k.accountID)
+                    if byConversation {
+                        try? await api.modifyThread(id: k.threadID, add: add, remove: remove)
+                    } else {
+                        try? await api.modifyMessage(id: k.threadID, add: add, remove: remove)
+                    }
+                }
             }
         }
         for k in keys { await refreshRow(account: k.accountID, id: k.threadID) }
@@ -227,10 +273,24 @@ final class ThreadListModel: ObservableObject {
     /// 行内快捷操作：加/去标签或读未读，成功后刷新该行。
     func mutate(account: String, id: String, add: [String] = [], remove: [String] = []) async {
         do {
-            try await GmailAPI(account: account).modifyThread(id: id, add: add, remove: remove)
+            let api = GmailAPI(account: account)
+            if conversation {
+                try await api.modifyThread(id: id, add: add, remove: remove)
+            } else {
+                try await api.modifyMessage(id: id, add: add, remove: remove)
+            }
             await refreshRow(account: account, id: id)
         } catch {
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func trashRemote(account: String, id: String) async throws {
+        let api = GmailAPI(account: account)
+        if conversation {
+            try await api.trashThread(id: id)
+        } else {
+            try await api.trashMessage(id: id)
         }
     }
 
@@ -275,6 +335,51 @@ final class ThreadListModel: ObservableObject {
             index += batchSize
         }
         return result
+    }
+
+    /// 按顺序、限并发地拉取单封邮件元数据并转成摘要（不按会话显示时用）。
+    nonisolated static func fetchMessageSummaries(refs: [MessageRef], api: GmailAPI, account: String) async throws -> [ThreadSummary] {
+        let headers = ["From", "To", "Subject", "Date"]
+        var result: [ThreadSummary] = []
+        let batchSize = 6
+        var index = 0
+        while index < refs.count {
+            let batch = Array(refs[index..<min(index + batchSize, refs.count)])
+            let fetched: [ThreadSummary?] = try await withThrowingTaskGroup(of: (Int, ThreadSummary?).self) { group in
+                for (offset, ref) in batch.enumerated() {
+                    group.addTask {
+                        let message = try? await api.getMessage(id: ref.id, format: "metadata", metadataHeaders: headers)
+                        return (offset, message.map { summarize(message: $0, account: account) })
+                    }
+                }
+                var slots = [ThreadSummary?](repeating: nil, count: batch.count)
+                for try await (offset, summary) in group {
+                    slots[offset] = summary
+                }
+                return slots
+            }
+            result.append(contentsOf: fetched.compactMap { $0 })
+            index += batchSize
+        }
+        return result
+    }
+
+    /// 从单封邮件构造摘要（不按会话显示时，一行即一封）。
+    nonisolated static func summarize(message: GmailMessage, account: String) -> ThreadSummary {
+        let from = MimeParser.header(message.payload, "From").map { EmailAddress(header: $0).display } ?? "（未知发件人）"
+        return ThreadSummary(
+            id: message.id,
+            from: from,
+            subject: MimeParser.header(message.payload, "Subject") ?? "（无主题）",
+            snippet: message.snippet ?? "",
+            date: message.date,
+            isUnread: message.isUnread,
+            isStarred: message.isStarred,
+            hasAttachment: !MimeParser.attachments(message.payload, messageID: message.id).isEmpty,
+            messageCount: 1,
+            labelIds: message.labelIds ?? [],
+            accountID: account
+        )
     }
 
     /// 从会话构造摘要（取最新一封邮件的头信息）。

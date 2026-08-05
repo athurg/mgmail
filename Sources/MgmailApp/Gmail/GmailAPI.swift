@@ -73,6 +73,18 @@ struct GmailAPI {
         return try decode(ThreadListResponse.self, data)
     }
 
+    /// 邮件列表（不按会话显示时用；每条结果是一封独立邮件）。
+    func listMessages(labelId: String?, query: String?, pageToken: String?,
+                      maxResults: Int = 40, includeSpamTrash: Bool = false) async throws -> MessageListResponse {
+        var items: [URLQueryItem] = [.init(name: "maxResults", value: String(maxResults))]
+        if let labelId { items.append(.init(name: "labelIds", value: labelId)) }
+        if let query, !query.isEmpty { items.append(.init(name: "q", value: query)) }
+        if let pageToken { items.append(.init(name: "pageToken", value: pageToken)) }
+        if includeSpamTrash { items.append(.init(name: "includeSpamTrash", value: "true")) }
+        let data = try await send(path: "/messages", query: items)
+        return try decode(MessageListResponse.self, data)
+    }
+
     /// 获取会话；format = "full" | "metadata" | "minimal"。
     func getThread(id: String, format: String = "full", metadataHeaders: [String] = []) async throws -> GmailThread {
         var items: [URLQueryItem] = [.init(name: "format", value: format)]
@@ -81,8 +93,10 @@ struct GmailAPI {
         return try decode(GmailThread.self, data)
     }
 
-    func getMessage(id: String, format: String = "full") async throws -> GmailMessage {
-        let data = try await send(path: "/messages/\(id)", query: [.init(name: "format", value: format)])
+    func getMessage(id: String, format: String = "full", metadataHeaders: [String] = []) async throws -> GmailMessage {
+        var items: [URLQueryItem] = [.init(name: "format", value: format)]
+        for h in metadataHeaders { items.append(.init(name: "metadataHeaders", value: h)) }
+        let data = try await send(path: "/messages/\(id)", query: items)
         return try decode(GmailMessage.self, data)
     }
 
@@ -96,6 +110,11 @@ struct GmailAPI {
     /// 从废纸篓恢复会话。
     func untrashThread(id: String) async throws {
         _ = try await send(path: "/threads/\(id)/untrash", method: "POST")
+    }
+
+    /// 把单封邮件移入废纸篓（不按会话显示时用）。
+    func trashMessage(id: String) async throws {
+        _ = try await send(path: "/messages/\(id)/trash", method: "POST")
     }
 
     func modifyThread(id: String, add: [String] = [], remove: [String] = []) async throws {

@@ -32,6 +32,19 @@ struct ThreadRef: Decodable {
     let historyId: String?
 }
 
+// MARK: - 邮件列表（不按会话显示时用）
+
+struct MessageListResponse: Decodable {
+    let messages: [MessageRef]?
+    let nextPageToken: String?
+    let resultSizeEstimate: Int?
+}
+
+struct MessageRef: Decodable {
+    let id: String
+    let threadId: String?
+}
+
 // MARK: - 会话 / 邮件详情
 
 struct GmailThread: Decodable, Identifiable {
