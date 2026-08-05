@@ -1,32 +1,34 @@
 import Foundation
 
-/// 一次增量同步的结果。三类变化都记 `邮件 id → 所属会话 id`，
-/// 因为列表在「按会话」和「按单封」两种模式下用的行 id 不同。
+/// 一封邮件这一轮里被加了哪些标签、去了哪些标签。
+struct LabelDelta {
+    var add: Set<String> = []
+    var remove: Set<String> = []
+}
+
+/// 一次增量同步的结果。
 struct SyncOutcome {
-    /// 新到达的邮件。
+    /// 新到达的邮件（id → 所属会话 id）。只有 id，信头要另外取。
     var added: [String: String] = [:]
-    /// 被彻底删除的邮件。
-    var removed: [String: String] = [:]
-    /// 标签有变动的邮件（读/未读、星标、归档、打标签都算）。
-    var changed: [String: String] = [:]
-    /// 起点太旧，增量拿不到了，调用方需要退回全量刷新。
+    /// 被彻底删除的邮件 id（移进废纸篓不算，那只是标签变动）。
+    var removed: Set<String> = []
+    /// 标签有变动的邮件。**变动内容 history 已经给全了**，本地按增删应用即可，
+    /// 不需要再逐封 get 去问「现在的标签是什么」。
+    var labelChanges: [String: LabelDelta] = [:]
+    /// 起点太旧，增量拿不到了，调用方需要退回全量重建。
     var needsFullReload = false
 
     var isEmpty: Bool {
-        added.isEmpty && removed.isEmpty && changed.isEmpty && !needsFullReload
+        added.isEmpty && removed.isEmpty && labelChanges.isEmpty && !needsFullReload
     }
 }
 
 /// 基于 `users.history` 的增量同步。
 ///
-/// 之前每次「刷新」都是把当前页整个重拉一遍（list + 一页的 get）。
 /// history.list 只回自上次同步以来的变化，通常是空的——一次请求、几百字节，
-/// 因此可以放心地定时跑。
+/// 而且它是**账户级**的：一个请求就覆盖了这个账号的所有邮箱。
 enum MailSync {
     /// 拉取某账号自上次位点以来的变化。
-    ///
-    /// 首次调用时本地没有位点，只记录当前 historyId 并返回空结果：
-    /// 此时"变化"的概念还不成立，全量加载会负责铺满首屏。
     static func incremental(account: String) async -> SyncOutcome {
         let api = GmailAPI(account: account)
 
@@ -46,7 +48,7 @@ enum MailSync {
                 latestHistoryID = page.historyId ?? latestHistoryID
                 pageToken = page.nextPageToken
             } catch let GmailError.http(code, _) where code == 404 {
-                // 位点太旧（Gmail 只保留约一周）：丢弃它，重新取一个，并让调用方全量刷新
+                // 位点太旧（Gmail 只保留约一周）：丢弃它，重新取一个，并让调用方重建
                 outcome.needsFullReload = true
                 await captureStartPoint(account: account, api: api)
                 return outcome
@@ -56,13 +58,22 @@ enum MailSync {
             }
         } while pageToken != nil
 
+        // 新到的邮件会连它的信头一起取回来，那份是最新的，标签增删就不必再算了
+        for id in outcome.added.keys {
+            outcome.labelChanges.removeValue(forKey: id)
+        }
         if let latestHistoryID {
             await MailCache.shared.saveHistoryID(latestHistoryID, account: account)
         }
         return outcome
     }
 
-    /// 记录当前 historyId 作为后续增量的起点。
+    /// 还没有位点时记一个，作为后续增量的起点。
+    static func captureStartPointIfNeeded(account: String) async {
+        guard await MailCache.shared.historyID(account: account) == nil else { return }
+        await captureStartPoint(account: account, api: GmailAPI(account: account))
+    }
+
     private static func captureStartPoint(account: String, api: GmailAPI) async {
         guard let historyID = try? await api.getProfile().historyId else { return }
         await MailCache.shared.saveHistoryID(historyID, account: account)
@@ -77,20 +88,35 @@ enum MailSync {
             for change in record.messagesAdded ?? [] {
                 let message = change.message
                 outcome.added[message.id] = message.threadId ?? message.id
-                outcome.removed.removeValue(forKey: message.id)
+                outcome.removed.remove(message.id)
             }
             for change in record.messagesDeleted ?? [] {
                 let message = change.message
-                outcome.removed[message.id] = message.threadId ?? message.id
+                outcome.removed.insert(message.id)
                 outcome.added.removeValue(forKey: message.id)
-                outcome.changed.removeValue(forKey: message.id)
+                outcome.labelChanges.removeValue(forKey: message.id)
             }
-            for change in (record.labelsAdded ?? []) + (record.labelsRemoved ?? []) {
-                let message = change.message
-                let id = message.id
-                guard outcome.removed[id] == nil, outcome.added[id] == nil else { continue }
-                outcome.changed[id] = message.threadId ?? id
+            for change in record.labelsAdded ?? [] {
+                merge(change, into: &outcome, added: true)
+            }
+            for change in record.labelsRemoved ?? [] {
+                merge(change, into: &outcome, added: false)
             }
         }
+    }
+
+    /// 同一封邮件先后被加又被去同一个标签时，以后来的为准。
+    private static func merge(_ change: HistoryLabelChange, into outcome: inout SyncOutcome, added: Bool) {
+        let id = change.message.id
+        guard !outcome.removed.contains(id), let labels = change.labelIds, !labels.isEmpty else { return }
+        var delta = outcome.labelChanges[id] ?? LabelDelta()
+        if added {
+            delta.add.formUnion(labels)
+            delta.remove.subtract(labels)
+        } else {
+            delta.remove.formUnion(labels)
+            delta.add.subtract(labels)
+        }
+        outcome.labelChanges[id] = delta
     }
 }

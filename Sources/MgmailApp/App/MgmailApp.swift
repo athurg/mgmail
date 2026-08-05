@@ -4,13 +4,18 @@ import SwiftUI
 struct MgmailApp: App {
     @StateObject private var appState = AppState()
     @StateObject private var labelStore = LabelStore()
+    /// 全应用唯一的邮件数据源（按账户组织，各邮箱视图都是它的过滤结果）。
+    @StateObject private var mailStore = MailStore()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(appState)
                 .environmentObject(labelStore)
+                .environmentObject(mailStore)
                 .frame(minWidth: 900, minHeight: 560)
+                // 提前把 WebKit 渲染进程拉起来，第一封邮件的正文不用等它冷启动
+                .task { MessageBodyLayout.warmUp() }
         }
         .windowStyle(.titleBar)
         .commands {
@@ -21,6 +26,7 @@ struct MgmailApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appState)
+                .environmentObject(mailStore)
         }
     }
 }

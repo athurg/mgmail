@@ -1,11 +1,13 @@
 import SwiftUI
-import AppKit
 
-/// 后台同步节奏：定时 + 回到 app 时各跑一次增量同步。
+/// 后台同步节奏：只有定时器会自动触发，其余都得由用户明确要求。
 ///
 /// 增量同步一次就是一个 `history.list` 请求，没变化时响应只有几百字节，
 /// 因此可以按分钟级轮询而不用担心配额；真正贵的全量拉取只在首次加载、
 /// 切换邮箱、或位点过期时才发生。
+///
+/// 刻意不监听 `didBecomeActive`：切回窗口不是「要求刷新」，
+/// 频繁切前后台会让请求量脱离用户预期。要立刻同步就点刷新按钮。
 @MainActor
 final class SyncScheduler: ObservableObject {
     /// 上一次同步完成的时间（供界面显示）。
@@ -14,7 +16,6 @@ final class SyncScheduler: ObservableObject {
     @Published private(set) var isSyncing = false
 
     private var timer: Task<Void, Never>?
-    private var activationObserver: NSObjectProtocol?
     /// 同步逻辑由外部注入：调度器只管什么时候跑，不管跑什么。
     private var perform: (@MainActor (String) async -> Void)?
     /// 要同步哪些账号，每次触发时现取（分组切换后账号会变）。
@@ -28,16 +29,11 @@ final class SyncScheduler: ObservableObject {
         self.accounts = accounts
         self.perform = perform
         startTimer()
-        observeActivation()
     }
 
     func stop() {
         timer?.cancel()
         timer = nil
-        if let activationObserver {
-            NotificationCenter.default.removeObserver(activationObserver)
-        }
-        activationObserver = nil
     }
 
     private func startTimer() {
@@ -51,23 +47,14 @@ final class SyncScheduler: ObservableObject {
         }
     }
 
-    /// 回到 app 时立刻同步一次：离开期间攒下的变化不必等下一个周期。
-    private func observeActivation() {
-        guard activationObserver == nil else { return }
-        activationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                Task { await self.syncNow() }
-            }
-        }
-    }
-
-    /// 立即同步一次（定时、窗口激活、手动刷新都走这里）。
-    func syncNow() async {
-        guard !isSyncing, let accounts = accounts?(), !accounts.isEmpty else { return }
+    /// 立即同步一次（定时、工具栏刷新、侧栏账号刷新都走这里）。
+    ///
+    /// `only` 非空时只同步该账号（侧栏是按账号刷新的）。即便它不在当前列表里也照样跑：
+    /// 同步会推进该账号的 history 位点，下次它出现在列表里时就不用从头补。
+    func syncNow(only: String? = nil) async {
+        guard !isSyncing else { return }
+        let accounts = only.map { [$0] } ?? (self.accounts?() ?? [])
+        guard !accounts.isEmpty else { return }
         isSyncing = true
         defer {
             isSyncing = false

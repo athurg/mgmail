@@ -7,7 +7,6 @@ struct LabelEditorView: View {
     @ObservedObject var detail: MessageDetailModel
     @EnvironmentObject private var labelStore: LabelStore
     /// 应用成功后回调，带上本次实际的增删，方便调用方免去一次网络确认。
-    var onChange: ([String], [String]) -> Void = { _, _ in }
     /// 关闭 popover（由宿主视图控制，比 dismiss 在 popover 里更可靠）。
     var onClose: () -> Void = {}
 
@@ -120,9 +119,7 @@ struct LabelEditorView: View {
         errorText = nil
         Task {
             do {
-                let (addedIDs, removedIDs) = (added, removed)
-                try await detail.modify(add: addedIDs, remove: removedIDs)
-                onChange(addedIDs, removedIDs)
+                try await detail.modify(add: added, remove: removed)
                 busy = false
                 onClose()
             } catch {

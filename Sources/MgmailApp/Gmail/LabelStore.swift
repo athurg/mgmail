@@ -53,8 +53,24 @@ final class LabelStore: ObservableObject {
     /// 正在网络刷新的账户，避免并发重复拉取。
     private var revalidating: Set<String> = []
 
-    /// 加载某账户的标签：先用磁盘缓存 seed，再后台拉最新（SWR）。
-    func load(for account: String, force: Bool = false) async {
+    /// 只在本地什么都没有时才联网。
+    ///
+    /// 标签是低频数据，没必要每次切分组都重新拉一遍；要拿最新的，
+    /// 点侧栏账号行上的刷新按钮（那会走 `load(force:)`）。
+    func loadIfNeeded(for account: String) async {
+        if labelsByAccount[account] != nil { return }
+        if let cached = await MailCache.shared.labels(account: account), !cached.isEmpty {
+            labelsByAccount[account] = cached
+            return
+        }
+        await load(for: account)
+    }
+
+    /// 加载某账户的标签：先用磁盘缓存 seed，再拉最新。
+    ///
+    /// `refreshColors` 为 false 时只给**新出现**的标签补颜色。定时刷新用这一档：
+    /// 在 Gmail 里没设过颜色的标签，`color` 永远是 nil，每次都去问一遍纯属白问。
+    func load(for account: String, force: Bool = false, refreshColors: Bool = true) async {
         // 内存没有则先从磁盘缓存 seed，立即可用
         if labelsByAccount[account] == nil,
            let cached = await MailCache.shared.labels(account: account) {
@@ -64,6 +80,9 @@ final class LabelStore: ObservableObject {
         if revalidating.contains(account) && !force { return }
         revalidating.insert(account)
         defer { revalidating.remove(account) }
+
+        // 本地已经见过的标签——它们的颜色早问过了，不管问出来的是有色还是无色
+        let seen = refreshColors ? [] : Set((labelsByAccount[account] ?? []).map(\.id))
         do {
             let api = GmailAPI(account: account)
             let fresh = try await api.listLabels()
@@ -78,7 +97,7 @@ final class LabelStore: ObservableObject {
             }
             labelsByAccount[account] = merged                // 先显示（含已知颜色）
             // labels.list 不含 color，对仍缺色的用户标签逐个 get 补齐
-            let enriched = await enrichColors(merged, api: api)
+            let enriched = await enrichColors(merged, api: api, skip: seen)
             labelsByAccount[account] = enriched
             await MailCache.shared.saveLabels(enriched, account: account)
         } catch {
@@ -89,8 +108,11 @@ final class LabelStore: ObservableObject {
     /// 对缺少颜色的用户标签补齐 color。
     /// labels.list 不返回颜色，只能逐个 get；用 batch 合成一次往返，
     /// 否则首次加载一个有几十个标签的账号就是几十个请求。
-    private func enrichColors(_ labels: [GmailLabel], api: GmailAPI) async -> [GmailLabel] {
-        let needIDs = labels.filter { !$0.isSystem && $0.color == nil }.map(\.id)
+    private func enrichColors(_ labels: [GmailLabel], api: GmailAPI,
+                              skip: Set<String> = []) async -> [GmailLabel] {
+        let needIDs = labels
+            .filter { !$0.isSystem && $0.color == nil && !skip.contains($0.id) }
+            .map(\.id)
         guard !needIDs.isEmpty else { return labels }
 
         let items = needIDs.map { BatchItem(id: $0, path: "/labels/\($0)") }

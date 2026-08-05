@@ -78,11 +78,6 @@ final class ThreadRowCoordinator: ObservableObject {
     func archive(_ summary: ThreadSummary) { performArchive(targets(summary)) }
     func trash(_ summary: ThreadSummary) { performTrash(targets(summary)) }
 
-    func loadMoreIfNeeded(after summary: ThreadSummary) {
-        guard summary.id == model.summaries.last?.id else { return }
-        Task { await model.loadMore() }
-    }
-
     // MARK: - 批量执行（含删除/归档后自动选中下一封）
 
     func performTrash(_ keys: [SelectedThread]) {

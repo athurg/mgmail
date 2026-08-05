@@ -1,53 +1,15 @@
 import SwiftUI
 
-/// 标准邮箱定义（映射到 Gmail 系统标签）。
-struct StandardMailbox: Identifiable, Hashable {
-    let id: String                 // 选择用的标识
-    let name: String
-    let systemImage: String
-    /// 传给 Gmail API 的 labelId；nil 表示不按标签过滤（「所有邮件」）。
-    var apiLabelID: String?
-    /// 是否需要包含 SPAM/TRASH（按这两个标签过滤时必须为 true）。
-    var includeSpamTrash: Bool = false
-
-    /// 「所有邮件」的特殊标识。
-    static let allMailID = "ALL_MAIL"
-
-    static let all: [StandardMailbox] = [
-        .init(id: "INBOX", name: "收件箱", systemImage: "tray", apiLabelID: "INBOX"),
-        .init(id: "STARRED", name: "已加星标", systemImage: "star", apiLabelID: "STARRED"),
-        .init(id: "SENT", name: "已发送", systemImage: "paperplane", apiLabelID: "SENT"),
-        .init(id: "DRAFT", name: "草稿", systemImage: "doc", apiLabelID: "DRAFT"),
-        .init(id: allMailID, name: "所有邮件", systemImage: "tray.full", apiLabelID: nil),
-        .init(id: "SPAM", name: "垃圾邮件", systemImage: "xmark.bin", apiLabelID: "SPAM", includeSpamTrash: true),
-        .init(id: "TRASH", name: "废纸篓", systemImage: "trash", apiLabelID: "TRASH", includeSpamTrash: true),
-    ]
-}
-
-/// Gmail 的收件箱分类标签（CATEGORY_*）。系统标签的 name 就是英文 id，这里给中文名与图标。
-struct MailCategory: Identifiable, Hashable {
-    let id: String
-    let name: String
-    let systemImage: String
-
-    static let all: [MailCategory] = [
-        .init(id: "CATEGORY_PERSONAL", name: "主要", systemImage: "person"),
-        .init(id: "CATEGORY_SOCIAL", name: "社交", systemImage: "person.2"),
-        .init(id: "CATEGORY_PROMOTIONS", name: "推广", systemImage: "megaphone"),
-        .init(id: "CATEGORY_UPDATES", name: "更新", systemImage: "bell.badge"),
-        .init(id: "CATEGORY_FORUMS", name: "论坛", systemImage: "bubble.left.and.bubble.right"),
-    ]
-}
-
 /// 左栏：账户与邮箱/标签。
 ///
 /// 结构（仿 Apple Mail）：
-/// - 顶部「邮箱」：固定邮箱一律跨账号聚合，不再展开子账号。
+/// - 顶部「智能邮箱」：跨账号聚合，只放日常真会一起看的收件箱与星标。
 /// - 账号分组：每个账号一个分组，内含该账号的全部标签——固定邮箱、
 ///   收件箱分类（CATEGORY_*）、自定义标签树。
 struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
+    @EnvironmentObject private var mailStore: MailStore
     @ObservedObject private var drag = DragMonitor.shared
     /// 各账号是否有网络请求在飞，用于在账号条目上显示忙碌指示。
     @ObservedObject private var activity = NetworkActivity.shared
@@ -80,25 +42,25 @@ struct SidebarView: View {
                 .environmentObject(labelStore)
         }
         .task(id: appState.activeAccounts.map(\.id)) {
-            // 并发加载各账号标签：每个都先用缓存瞬时 seed，避免串行等第一个网络刷新完
+            // 只补齐本地还没有的账号标签；已有缓存就直接用，要最新的走账号行上的刷新按钮
             await withTaskGroup(of: Void.self) { group in
                 for account in appState.activeAccounts {
-                    group.addTask { await labelStore.load(for: account.id) }
+                    group.addTask { await labelStore.loadIfNeeded(for: account.id) }
                 }
             }
         }
     }
 
-    // MARK: - 固定邮箱（跨账号聚合）
+    // MARK: - 智能邮箱（跨账号聚合）
 
     @ViewBuilder
     private var fixedLabelsSection: some View {
         // 拖动邮件时固定邮箱都不是放置目标，整体压暗，把注意力让给标签区
         let dim = drag.isDraggingThreads ? 0.35 : 1
-        Section("邮箱") {
-            // 仿 Apple Mail：这里的邮箱一律汇总当前分组的所有账号，不再展开子账号；
-            // 要单看某个账号，去下面该账号自己的分组里选。
-            ForEach(StandardMailbox.all) { box in
+        Section("智能邮箱") {
+            // 汇总当前分组的所有账号。只放收件箱和星标——已发送、草稿、垃圾邮件、
+            // 废纸篓都是「针对某个账号」才有意义的，去下面各账号自己的分组里看。
+            ForEach(StandardMailbox.smart) { box in
                 Label(box.name, systemImage: box.systemImage)
                     .tag(MailboxSelection(accountID: nil, labelID: box.id, labelName: box.name))
                     .opacity(dim)
@@ -216,15 +178,32 @@ struct SidebarView: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
+                // 本地邮件回溯到哪儿了。淡淡一行，解释了「为什么有些邮箱是空的」
+                if let oldest = mailStore.oldestDate(account: account.id) {
+                    Text("邮件自 \(Self.backfillText(oldest))")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
-            // 该账号有请求在飞时转圈：加载列表、增量同步、打标签、下载附件都算
+            // 该账号有请求在飞时转圈；空闲时同一个位置放刷新按钮，
+            // 两者尺寸一致，切换时分组头不会跟着跳。
             if activity.busyAccounts.contains(account.id) {
                 ProgressView()
                     .controlSize(.small)
                     .scaleEffect(0.6)
                     .frame(width: 12, height: 12)
                     .transition(.opacity)
+            } else {
+                Button { refresh(account) } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption2)
+                        .frame(width: 12, height: 12)
+                }
+                .buttonStyle(.borderless)
+                .help("刷新该账号（同步邮件与标签）")
+                .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: 0.15), value: activity.busyAccounts.contains(account.id))
@@ -235,8 +214,23 @@ struct SidebarView: View {
             }
             Divider()
             SettingsLink { Text("账号与分组…") }
-            Button("移除账户", role: .destructive) { appState.removeAccount(account) }
+            Button("移除账户", role: .destructive) {
+                mailStore.drop(account: account.id)
+                appState.removeAccount(account)
+            }
         }
+    }
+
+    /// 手动刷新一个账号：标签拉新，然后按位点同步邮件变化。
+    private func refresh(_ account: Account) {
+        Task { await MailRefresh.account(account.id, labels: labelStore, mail: mailStore) }
+    }
+
+    private static func backfillText(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
+            ? "M月d日" : "yyyy年M月"
+        return f.string(from: date)
     }
 
     /// 「分类」等次级分组的展开绑定（默认折叠，记录“已展开”，与标签树同一套持久化）。
@@ -259,6 +253,7 @@ private struct LabelNodeView: View {
     /// 拖动邮件时本账号标签区的可放置状态。
     var affinity: DropAffinity = .neutral
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var mailStore: MailStore
     @ObservedObject private var drag = DragMonitor.shared
     /// 全局设置：按会话显示时对整个会话打标签，否则只对单封。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
@@ -308,7 +303,7 @@ private struct LabelNodeView: View {
         }
     }
 
-    /// 给拖来的邮件加上本标签，成功后广播让列表刷新这些行。
+    /// 给拖来的邮件加上本标签：先改本地池子（列表立刻响应），再发请求。
     private func accept(_ label: GmailLabel, _ providers: [NSItemProvider]) -> Bool {
         DragMonitor.shared.end()
         isDropTargeted = false
@@ -317,11 +312,19 @@ private struct LabelNodeView: View {
         Task {
             guard let payload = await ThreadDragPayload.decode(from: providers),
                   payload.accountIDs == [account] else { return }
+
+            let ids = payload.items.flatMap { item in
+                conversation
+                    ? mailStore.threadMessages(account: account, threadID: item.threadID).map(\.id)
+                    : [item.threadID]
+            }
+            mailStore.applyLabels(account: account, messageIDs: ids, add: [label.id], remove: [])
+
             if let error = await MailActions.modify(payload.items, add: [label.id],
                                                     conversation: conversation) {
                 appState.errorMessage = error
+                await mailStore.revalidate(account: account, messageIDs: ids)
             }
-            appState.threadsDidChange(payload.items, add: [label.id])
         }
         return true
     }
