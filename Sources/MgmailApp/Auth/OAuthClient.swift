@@ -109,8 +109,9 @@ struct OAuthClient {
     func fetchUserInfo(accessToken: String) async throws -> (name: String?, picture: String?) {
         var request = URLRequest(url: URL(string: "https://openidconnect.googleapis.com/v1/userinfo")!)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        let (data, http) = try await logged(request, account: nil,
+                                            activity: .init(kind: .profile, title: "读取账户资料"))
+        guard let http, (200..<300).contains(http.statusCode) else {
             throw OAuthError.profileFailed(String(data: data, encoding: .utf8) ?? "")
         }
         struct UserInfo: Decodable { let name: String?; let picture: String? }
@@ -119,7 +120,8 @@ struct OAuthClient {
     }
 
     /// 用 refresh token 换取新的 access token。
-    func refresh(refreshToken: String) async throws -> RefreshedToken {
+    /// `account` 只用于活动日志的归属（登录流程里还不知道邮箱时可以不给）。
+    func refresh(refreshToken: String, account: String? = nil) async throws -> RefreshedToken {
         var request = URLRequest(url: URL(string: config.tokenURI)!)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -129,7 +131,7 @@ struct OAuthClient {
             "grant_type": "refresh_token",
             "refresh_token": refreshToken,
         ])
-        let token = try await performTokenRequest(request)
+        let token = try await performTokenRequest(request, account: account, title: "刷新访问令牌")
         return RefreshedToken(accessToken: token.accessToken, expiresAt: token.expiresAt)
     }
 
@@ -147,12 +149,14 @@ struct OAuthClient {
             "redirect_uri": redirectURI,
             "code_verifier": verifier,
         ])
-        return try await performTokenRequest(request)
+        return try await performTokenRequest(request, account: nil, title: "换取访问令牌")
     }
 
-    private func performTokenRequest(_ request: URLRequest) async throws -> TokenResponse {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+    private func performTokenRequest(_ request: URLRequest, account: String?,
+                                     title: String) async throws -> TokenResponse {
+        let (data, http) = try await logged(request, account: account,
+                                            activity: .init(kind: .auth, title: title))
+        guard let http, (200..<300).contains(http.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw OAuthError.tokenExchangeFailed(body)
         }
@@ -167,12 +171,38 @@ struct OAuthClient {
     private func fetchEmail(accessToken: String) async throws -> String {
         var request = URLRequest(url: URL(string: "https://gmail.googleapis.com/gmail/v1/users/me/profile")!)
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        let (data, http) = try await logged(request, account: nil,
+                                            activity: .init(kind: .auth, title: "读取登录账号"))
+        guard let http, (200..<300).contains(http.statusCode) else {
             throw OAuthError.profileFailed(String(data: data, encoding: .utf8) ?? "")
         }
         struct Profile: Decodable { let emailAddress: String }
         return try JSONDecoder().decode(Profile.self, from: data).emailAddress
+    }
+
+    /// 发一次请求并登记到活动日志。
+    ///
+    /// OAuth 的请求不经过 `GmailAPI`，得自己登记；只记 URL 与结果，
+    /// 请求体里有 client secret 和 refresh token，一个字都不往日志里写。
+    private func logged(_ request: URLRequest, account: String?,
+                        activity: ActivityDescriptor) async throws -> (Data, HTTPURLResponse?) {
+        let url = request.url ?? URL(string: "about:blank")!
+        let token = await ActivityLog.shared.begin(activity, account: account,
+                                                   method: request.httpMethod ?? "GET", url: url)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let http = response as? HTTPURLResponse
+            let ok = http.map { (200..<300).contains($0.statusCode) } ?? false
+            await ActivityLog.shared.finish(
+                token, statusCode: http?.statusCode, bytes: data.count,
+                error: ok ? nil : (String(data: data, encoding: .utf8).map { String($0.prefix(300)) } ?? "请求失败")
+            )
+            return (data, http)
+        } catch {
+            await ActivityLog.shared.finish(token, statusCode: nil,
+                                            error: ActivityLog.message(for: error))
+            throw error
+        }
     }
 
     private func formBody(_ params: [String: String]) -> Data {

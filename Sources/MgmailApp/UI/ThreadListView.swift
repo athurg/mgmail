@@ -14,8 +14,6 @@ struct ThreadListView: View {
     @ObservedObject private var rows = ThreadRowCoordinator.shared
     /// 拖拽状态：只有列表和侧栏订阅它，拖动时不会连累详情栏重绘。
     @ObservedObject private var drag = DragMonitor.shared
-    /// 各账号是否有请求在飞（工具栏刷新按钮据此转圈）。
-    @ObservedObject private var activity = NetworkActivity.shared
     /// 定时刷新的节奏控制。
     @StateObject private var sync = SyncScheduler()
     /// 冷启动的第一次刷新还没跑完（此时列表空白该显示转圈而不是「没有邮件」）。
@@ -60,21 +58,9 @@ struct ThreadListView: View {
             }
         }
         .navigationTitle(appState.selection?.labelName ?? "收件箱")
+        // 这里不再放刷新按钮：自动刷新有定时器，手动刷新在侧栏账号行上，
+        // 而「正在联网」由窗口底部的活动栏统一交代。
         .toolbar {
-            ToolbarItem {
-                // 忙碌时不换成 ProgressView，而是原地把图标换成转圈——
-                // 换控件会让按钮尺寸变化，工具栏跟着跳一下。
-                let busy = isRefreshing
-                Button { refresh() } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .opacity(busy ? 0 : 1)
-                        .overlay {
-                            if busy { ProgressView().controlSize(.small) }
-                        }
-                }
-                .help(refreshHelp)
-                .disabled(busy || appState.selection == nil)
-            }
             ToolbarItem { filterMenu }
         }
         // 选择/显示方式/过滤器变化：纯本地重算，不联网
@@ -249,19 +235,6 @@ struct ThreadListView: View {
         .disabled(appState.selection == nil)
     }
 
-    /// 刷新按钮的提示：带上次同步时间，让「有没有在同步」可见。
-    private var refreshHelp: String {
-        guard let at = sync.lastSyncedAt else { return "刷新" }
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
-        return "刷新（上次同步 \(f.string(from: at))）"
-    }
-
-    /// 当前视图涉及的账号里有没有请求在飞。
-    private var isRefreshing: Bool {
-        selectionAccounts.contains { activity.busyAccounts.contains($0) }
-    }
-
     private var emptyTitle: String {
         switch readFilter {
         case .all: return conversationView ? "没有会话" : "没有邮件"
@@ -310,12 +283,6 @@ struct ThreadListView: View {
         guard MailboxQuery.needsExplicitFetch(labelID: selection.labelID) else { return }
         for account in selectionAccounts {
             await mailStore.ensureMailbox(account: account, labelID: selection.labelID)
-        }
-    }
-
-    private func refresh() {
-        Task {
-            await MailRefresh.accounts(selectionAccounts, labels: labelStore, mail: mailStore)
         }
     }
 
