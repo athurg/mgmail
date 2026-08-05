@@ -24,11 +24,27 @@ struct StandardMailbox: Identifiable, Hashable {
     ]
 }
 
+/// Gmail 的收件箱分类标签（CATEGORY_*）。系统标签的 name 就是英文 id，这里给中文名与图标。
+struct MailCategory: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let systemImage: String
+
+    static let all: [MailCategory] = [
+        .init(id: "CATEGORY_PERSONAL", name: "主要", systemImage: "person"),
+        .init(id: "CATEGORY_SOCIAL", name: "社交", systemImage: "person.2"),
+        .init(id: "CATEGORY_PROMOTIONS", name: "推广", systemImage: "megaphone"),
+        .init(id: "CATEGORY_UPDATES", name: "更新", systemImage: "bell.badge"),
+        .init(id: "CATEGORY_FORUMS", name: "论坛", systemImage: "bubble.left.and.bubble.right"),
+    ]
+}
+
 /// 左栏：账户与邮箱/标签。
 ///
-/// 结构（仿常见邮件客户端）：
-/// - 固定标签：一级按标签本身聚合，二级按账户（多账户时可折叠，默认展开）。
-/// - 自定义标签：按账户聚合，每个账户一个分组（内含标签层级树）。
+/// 结构（仿 Apple Mail）：
+/// - 顶部「邮箱」：固定邮箱一律跨账号聚合，不再展开子账号。
+/// - 账号分组：每个账号一个分组，内含该账号的全部标签——固定邮箱、
+///   收件箱分类（CATEGORY_*）、自定义标签树。
 struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
@@ -73,59 +89,60 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: - 固定标签（标签 → 账户）
+    // MARK: - 固定邮箱（跨账号聚合）
 
     @ViewBuilder
     private var fixedLabelsSection: some View {
         // 拖动邮件时固定邮箱都不是放置目标，整体压暗，把注意力让给标签区
         let dim = drag.isDraggingThreads ? 0.35 : 1
         Section("邮箱") {
-            if appState.activeAccounts.count == 1, let only = appState.activeAccounts.first {
-                // 单账户直接平铺，避免多余的一层嵌套
-                ForEach(StandardMailbox.all) { box in
-                    Label(box.name, systemImage: box.systemImage)
-                        .tag(MailboxSelection(accountID: only.id, labelID: box.id, labelName: box.name))
-                        .opacity(dim)
-                }
-            } else {
-                // 多账户：点标签名看跨账号聚合，展开可选单个账号；默认折叠。
-                ForEach(StandardMailbox.all) { box in
-                    DisclosureGroup(isExpanded: groupBinding("mbx:\(box.id)")) {
-                        ForEach(appState.activeAccounts) { account in
-                            accountMailboxRow(account, box)
-                        }
-                    } label: {
-                        Label(box.name, systemImage: box.systemImage)
-                            .tag(MailboxSelection(accountID: nil, labelID: box.id, labelName: box.name))
-                    }
+            // 仿 Apple Mail：这里的邮箱一律汇总当前分组的所有账号，不再展开子账号；
+            // 要单看某个账号，去下面该账号自己的分组里选。
+            ForEach(StandardMailbox.all) { box in
+                Label(box.name, systemImage: box.systemImage)
+                    .tag(MailboxSelection(accountID: nil, labelID: box.id, labelName: box.name))
                     .opacity(dim)
-                }
             }
         }
         .animation(.easeOut(duration: 0.15), value: drag.isDraggingThreads)
     }
 
-    /// 固定标签下某账户的一行。
-    private func accountMailboxRow(_ account: Account, _ box: StandardMailbox) -> some View {
-        HStack(spacing: 6) {
-            AccountAvatar(account: account, size: 14, reloadToken: appState.avatarReloadToken)
-            Text(account.displayName).lineLimit(1).truncationMode(.middle)
-        }
-        .help(account.email)
-        .tag(MailboxSelection(accountID: account.id, labelID: box.id, labelName: "\(account.displayName) · \(box.name)"))
-    }
-
-    // MARK: - 自定义标签（账户 → 标签树）
+    // MARK: - 账号分组（账户 → 该账号的全部标签）
 
     @ViewBuilder
     private var customLabelsSections: some View {
         ForEach(appState.activeAccounts) { account in
             let tree = LabelTree.build(labelStore.userLabels(for: account.id))
+            let categories = labelStore.categories(for: account.id)
             let affinity = affinity(for: account.id)
             // 可折叠：点账号名（分组头）隐藏/展开该账号的标签列表。默认展开。
             Section(isExpanded: accountBinding(account.id)) {
+                // 拖邮件时固定邮箱与分类都不是放置目标，直接让位，免得把标签树挤到要滚动
+                if !drag.isDraggingThreads {
+                    // 该账号自己的固定邮箱：顶部是聚合视图，这里才能单看一个账号
+                    ForEach(StandardMailbox.all) { box in
+                        Label(box.name, systemImage: box.systemImage)
+                            .tag(MailboxSelection(accountID: account.id, labelID: box.id,
+                                                  labelName: "\(account.displayName) · \(box.name)"))
+                    }
+                    // 收件箱分类（主要/社交/推广…）：条目多且不常用，收进一个默认折叠的组
+                    if !categories.isEmpty {
+                        DisclosureGroup(isExpanded: groupBinding("cat:\(account.id)")) {
+                            ForEach(categories) { category in
+                                Label(category.name, systemImage: category.systemImage)
+                                    .tag(MailboxSelection(accountID: account.id, labelID: category.id,
+                                                          labelName: "\(account.displayName) · \(category.name)"))
+                            }
+                        } label: {
+                            Label("分类", systemImage: "square.grid.2x2")
+                        }
+                    }
+                }
                 if tree.isEmpty {
-                    Text("无自定义标签").font(.caption).foregroundStyle(.secondary)
+                    // 拖动中此时分组里空空如也，给个说明；平时有固定邮箱撑着就不用了
+                    if drag.isDraggingThreads {
+                        Text("无自定义标签").font(.caption).foregroundStyle(.secondary)
+                    }
                 } else {
                     ForEach(tree) { node in
                         LabelNodeView(node: node, accountID: account.id,
@@ -222,7 +239,7 @@ struct SidebarView: View {
         }
     }
 
-    /// 固定邮箱分组的展开绑定（默认折叠，记录“已展开”，与标签树同一套持久化）。
+    /// 「分类」等次级分组的展开绑定（默认折叠，记录“已展开”，与标签树同一套持久化）。
     private func groupBinding(_ id: String) -> Binding<Bool> {
         Binding(
             get: { expandedLabels.contains(id) },
