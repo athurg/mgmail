@@ -102,6 +102,7 @@ final class MessageDetailModel: ObservableObject {
 
     /// 从服务器取正文，解析内联图片后写进缓存。一次请求拿完。
     private func fetch(account: String, threadID: String) async {
+        FileHandle.standardError.write(Data("VERIFY-FETCH \(threadID)\n".utf8))
         isLoading = true
         defer { isLoading = false }
         do {
@@ -147,7 +148,9 @@ final class MessageDetailModel: ObservableObject {
 
             var html = result[idx].bodyHTML
             for img in inlines where html.contains("cid:\(img.contentID)") {
-                let key = "\(message.id)_\(img.attachmentId)"
+                // 用 Content-ID 而不是 attachmentId 做键：后者是 Gmail 每次 get 现发的临时票据，
+                // 同一张图每次拉回来都不一样，拿它当键等于缓存永远不命中，每次都重下一遍。
+                let key = "\(message.id)_\(img.contentID)"
                 let uri: String
                 if let cached = await MailCache.shared.inlineDataURI(account: account, key: key) {
                     uri = cached
