@@ -22,14 +22,29 @@ enum AvatarStore {
     @discardableResult
     static func download(from urlString: String, for email: String) async -> Bool {
         guard let url = URL(string: urlString) else { return false }
+        let token = await ActivityLog.shared.begin(.init(kind: .profile, title: "下载账号头像"),
+                                                   account: email, method: "GET", url: url)
+        let data: Data
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                  let image = NSImage(data: data) else { return false }
-            // 统一转成 PNG 存盘
-            guard let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) else { return false }
+            let (body, response) = try await URLSession.shared.data(from: url)
+            let http = response as? HTTPURLResponse
+            let ok = http.map { (200..<300).contains($0.statusCode) } ?? false
+            await ActivityLog.shared.finish(token, statusCode: http?.statusCode, bytes: body.count,
+                                            error: ok ? nil : "下载失败")
+            guard ok else { return false }
+            data = body
+        } catch {
+            await ActivityLog.shared.finish(token, statusCode: nil,
+                                            error: ActivityLog.message(for: error))
+            return false
+        }
+
+        // 统一转成 PNG 存盘
+        guard let image = NSImage(data: data),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return false }
+        do {
             try png.write(to: fileURL(for: email), options: .atomic)
             return true
         } catch {

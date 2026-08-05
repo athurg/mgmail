@@ -27,7 +27,8 @@ actor AuthManager {
         guard let refreshToken = TokenStore.refreshToken(for: email) else {
             throw OAuthError.noRefreshToken
         }
-        let refreshed = try await OAuthClient(config: config).refresh(refreshToken: refreshToken)
+        let refreshed = try await OAuthClient(config: config).refresh(refreshToken: refreshToken,
+                                                                     account: email)
         cache[email] = CachedToken(accessToken: refreshed.accessToken, expiresAt: refreshed.expiresAt)
         // 注意：这里绝不重写 refresh token 回钥匙串。
         // 否则 SecItemDelete+Add 会抹掉用户在钥匙串里手动设置的访问控制（如“所有应用可读”）。

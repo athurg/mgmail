@@ -2,8 +2,9 @@ import SwiftUI
 
 /// 按账号统计「正在飞的请求」，供侧栏显示忙碌指示。
 ///
-/// 所有 Gmail 请求都经过 `GmailAPI.sendRaw`，在那里进出计数即可覆盖全部：
-/// 列表加载、增量同步、打标签、下载附件、补标签颜色……不用各处埋点。
+/// 计数由 `ActivityLog` 在登记活动时顺手驱动，因此覆盖所有联网出口。
+/// 之所以和活动日志分成两个对象：日志每来一个请求就变，而侧栏只关心
+/// 「这个账号忙不忙」——订阅同一个对象会让整棵侧栏跟着请求节奏重绘。
 @MainActor
 final class NetworkActivity: ObservableObject {
     static let shared = NetworkActivity()

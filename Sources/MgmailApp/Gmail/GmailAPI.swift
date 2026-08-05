@@ -181,54 +181,69 @@ struct GmailAPI {
                                  contentType: body == nil ? nil : "application/json")
     }
 
-    /// 所有 Gmail 请求的唯一出口：忙碌计数 → 并发闸门 → token 注入 → 401 刷新重试 → 限流退避重试。
-    func sendRaw(url: URL, method: String, body: Data?, contentType: String?) async throws -> Data {
+    /// 所有 Gmail 请求的唯一出口：活动记录 → 并发闸门 → token 注入 → 401 刷新重试 → 限流退避重试。
+    ///
+    /// 活动日志在这里登记，因此每一个 Gmail 请求都会自动出现在活动窗口里，
+    /// 新加的接口不用另外埋点。`activity` 只在 URL 看不出内容时才需要给（批量请求）。
+    func sendRaw(url: URL, method: String, body: Data?, contentType: String?,
+                 activity: ActivityDescriptor? = nil) async throws -> Data {
         let account = self.account
-        await NetworkActivity.shared.begin(account)
+        let logToken = await ActivityLog.shared.begin(
+            activity ?? .infer(url: url, method: method),
+            account: account, method: method, url: url
+        )
         await RequestGate.shared.acquire()
-        defer {
-            Task {
-                await RequestGate.shared.release()
-                await NetworkActivity.shared.end(account)
-            }
-        }
+        defer { Task { await RequestGate.shared.release() } }
 
         var refreshedOnce = false
         var attempt = 0
 
-        while true {
-            var request = URLRequest(url: url)
-            request.httpMethod = method
-            let token = try await AuthManager.shared.validAccessToken(for: account,
-                                                                     forceRefresh: refreshedOnce)
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            if let body {
-                request.httpBody = body
-                if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        do {
+            while true {
+                var request = URLRequest(url: url)
+                request.httpMethod = method
+                let token = try await AuthManager.shared.validAccessToken(for: account,
+                                                                         forceRefresh: refreshedOnce)
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                if let body {
+                    request.httpBody = body
+                    if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+                }
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw GmailError.http(-1, "无响应")
+                }
+
+                if (200..<300).contains(http.statusCode) {
+                    await ActivityLog.shared.finish(logToken, statusCode: http.statusCode,
+                                                    bytes: data.count)
+                    return data
+                }
+
+                // access token 过期：强制刷新后重来一次
+                if http.statusCode == 401, !refreshedOnce {
+                    refreshedOnce = true
+                    continue
+                }
+
+                // 限流 / 服务端抖动：退避后重试
+                if attempt < RetryPolicy.maxAttempts,
+                   RetryPolicy.shouldRetry(status: http.statusCode, body: data) {
+                    attempt += 1
+                    await ActivityLog.shared.retried(logToken)
+                    try? await Task.sleep(for: RetryPolicy.delay(attempt: attempt))
+                    continue
+                }
+
+                throw GmailError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
             }
-
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw GmailError.http(-1, "无响应")
-            }
-
-            if (200..<300).contains(http.statusCode) { return data }
-
-            // access token 过期：强制刷新后重来一次
-            if http.statusCode == 401, !refreshedOnce {
-                refreshedOnce = true
-                continue
-            }
-
-            // 限流 / 服务端抖动：退避后重试
-            if attempt < RetryPolicy.maxAttempts,
-               RetryPolicy.shouldRetry(status: http.statusCode, body: data) {
-                attempt += 1
-                try? await Task.sleep(for: RetryPolicy.delay(attempt: attempt))
-                continue
-            }
-
-            throw GmailError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        } catch {
+            var status: Int?
+            if case let GmailError.http(code, _) = error { status = code }
+            await ActivityLog.shared.finish(logToken, statusCode: status,
+                                            error: ActivityLog.message(for: error))
+            throw error
         }
     }
 
