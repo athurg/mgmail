@@ -37,31 +37,47 @@ struct MessageDetailView: View {
         .task(id: taskKey) { await reload() }
     }
 
+    /// 工具栏分两组：① 邮件操作（归档、已读未读、星标、删除）② 标签。
+    /// 用 ControlGroup 让组内按钮连成一体，组与组之间才有明显的间隔。
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
-        ToolbarItemGroup {
-            Button { run { try await model.toggleStar() } } label: {
-                Image(systemName: model.isStarred ? "star.fill" : "star")
-                    .foregroundStyle(model.isStarred ? .yellow : .secondary)
-            }.help(model.isStarred ? "取消星标" : "加星标")
+        ToolbarItem {
+            ControlGroup {
+                Button { run { try await model.archive() } } label: {
+                    Image(systemName: "archivebox")
+                }.help("归档（移出收件箱）").disabled(!model.isInInbox)
 
-            Button { run { try await model.setUnread(!model.isUnread) } } label: {
-                Image(systemName: model.isUnread ? "envelope.badge" : "envelope.open")
-            }.help(model.isUnread ? "标记为已读" : "标记为未读")
+                Button { run { try await model.setUnread(!model.isUnread) } } label: {
+                    Image(systemName: model.isUnread ? "envelope.badge" : "envelope.open")
+                }.help(model.isUnread ? "标记为已读" : "标记为未读")
 
-            Button { run { try await model.archive() } } label: {
-                Image(systemName: "archivebox")
-            }.help("归档（移出收件箱）").disabled(!model.isInInbox)
+                Button { run { try await model.toggleStar() } } label: {
+                    Image(systemName: model.isStarred ? "star.fill" : "star")
+                        .foregroundStyle(model.isStarred ? .yellow : .secondary)
+                }.help(model.isStarred ? "取消星标" : "加星标")
 
-            Button { showLabelPopover.toggle() } label: {
-                Image(systemName: "tag")
-            }.help("标签")
-            .popover(isPresented: $showLabelPopover) {
-                LabelEditorView(account: model.account ?? "", detail: model) {
-                    broadcast()
-                }
+                Button(role: .destructive) { requestTrash() } label: {
+                    Image(systemName: "trash")
+                }.help("删除（移入废纸篓）")
             }
         }
+
+        ToolbarItem {
+            Button { showLabelPopover.toggle() } label: {
+                Image(systemName: model.hasUserLabels ? "tag.fill" : "tag")
+            }.help("标签")
+            .popover(isPresented: $showLabelPopover) {
+                LabelEditorView(account: model.account ?? "", detail: model,
+                                onChange: { broadcast() },
+                                onClose: { showLabelPopover = false })
+            }
+        }
+    }
+
+    /// 删除交给中栏列表执行：它会把行移除并自动选中下一封。
+    private func requestTrash() {
+        guard let account = model.account, let id = model.threadID else { return }
+        appState.requestTrash(account: account, id: id)
     }
 
     /// 执行一个修改操作，成功后广播变更。

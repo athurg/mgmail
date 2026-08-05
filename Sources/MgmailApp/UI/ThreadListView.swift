@@ -7,6 +7,14 @@ struct ThreadListView: View {
     @StateObject private var model = ThreadListModel()
     /// 全局设置：是否按会话显示邮件。默认关闭（每行一封独立邮件）。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
+    /// 已读/未读过滤（右上角过滤器，记住上次选择）。
+    @AppStorage(SettingsKey.readFilter) private var readFilterRaw = ReadFilter.all.rawValue
+    /// 行的动作中枢（长期存活，保证行视图的字段稳定可比较，详见 ThreadRowCoordinator）。
+    @ObservedObject private var rows = ThreadRowCoordinator.shared
+    /// 拖拽状态：只有列表和侧栏订阅它，拖动时不会连累详情栏重绘。
+    @ObservedObject private var drag = DragMonitor.shared
+
+    private var readFilter: ReadFilter { ReadFilter(rawValue: readFilterRaw) ?? .all }
 
     /// 当前选择涉及的账号（聚合视图为当前分组内账号）。
     private var selectionAccounts: [String] {
@@ -41,7 +49,7 @@ struct ThreadListView: View {
             } else if model.summaries.isEmpty && model.isLoading {
                 ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.summaries.isEmpty {
-                ContentUnavailableView(conversationView ? "没有会话" : "没有邮件", systemImage: "tray")
+                ContentUnavailableView(emptyTitle, systemImage: readFilter == .all ? "tray" : "line.3.horizontal.decrease.circle")
             } else {
                 list
             }
@@ -59,6 +67,7 @@ struct ThreadListView: View {
                     .disabled(appState.selection == nil)
                 }
             }
+            ToolbarItem { filterMenu }
         }
         .task(id: reloadKey) {
             // 首次加载、选择变化、或切换会话/单封显示方式时重新加载
@@ -71,49 +80,139 @@ struct ThreadListView: View {
         }
         .onChange(of: appState.lastThreadChange) { _, change in
             guard let change else { return }
-            Task { await model.refreshRow(account: change.account, id: change.id) }
+            Task {
+                for item in change.items {
+                    await model.refreshRow(account: item.accountID, id: item.threadID)
+                }
+            }
+        }
+        // 详情栏点「删除」：由列表执行，顺带自动选中下一封
+        .onChange(of: appState.trashRequest) { _, request in
+            guard let request else { return }
+            rows.performTrash([SelectedThread(accountID: request.account, threadID: request.id)])
         }
         .onChange(of: appState.selectedThreads) { _, sel in
-            // 同步选中项摘要（供右栏多选叠加卡片），保持列表顺序
-            appState.selectedInfos = model.summaries
+            // 同步选中项摘要（供右栏多选叠加卡片），保持列表顺序。
+            // 必须推迟一拍再写回：这里仍处在 NSTableView 的选择回调里，
+            // 同步改 appState 会让 List 在 delegate 内部重建（AppKit 会报 reentrant 警告），
+            // 表现为点一下邮件整个界面闪一下。
+            let infos = model.summaries
                 .filter { sel.contains($0.key) }
                 .map { SelectedThreadInfo(accountID: $0.accountID, threadID: $0.id,
                                           from: $0.from, subject: $0.subject, date: $0.date) }
+            Task { @MainActor in appState.selectedInfos = infos }
         }
     }
 
     private var list: some View {
-        List(selection: $appState.selectedThreads) {
+        // 每次布局刷新协调器持有的引用（都是长期存活的对象，不会引起额外刷新）
+        rows.model = model
+        rows.appState = appState
+        rows.updateLabelMap(labelMap)
+        DragMonitor.shared.appState = appState
+
+        let selection = Binding<Set<SelectedThread>>(
+            get: { appState.selectedThreads },
+            set: { new in
+                guard new != appState.selectedThreads else { return }
+                appState.selectedThreads = new
+            }
+        )
+        return List(selection: selection) {
             ForEach(model.summaries) { summary in
-                ThreadRow(summary: summary, labelMap: labelMap, accountBadge: badge(for: summary),
-                          avatarReloadToken: appState.avatarReloadToken)
-                    .tag(SelectedThread(accountID: summary.accountID, threadID: summary.id))
-                    .contextMenu { rowMenu(summary) }
-                    // 右滑：标记已读/未读、旗标；左滑：归档、删除（纯图标）
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) { leadingSwipe(summary) }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) { trailingSwipe(summary) }
-                    .onAppear {
-                        if summary.id == model.summaries.last?.id {
-                            Task { await model.loadMore() }
-                        }
-                    }
+                row(summary)
             }
             if model.isLoading && !model.summaries.isEmpty {
                 HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
             }
         }
         .listStyle(.inset)
+        .onPreferenceChange(RowFramesKey.self) { frames in
+            ThreadRowCoordinator.shared.rowFrames = frames
+        }
+        // 拖拽层：覆盖在列表之上但对点击透明，把「拖出邮件」从行里彻底移走。
+        // 行上一旦挂拖拽 modifier，改选中就会在 NSTableView 的选择回调里重做注册（reentrant）。
+        .overlay {
+            ThreadDragLayer(
+                rowAt: { ThreadRowCoordinator.shared.row(at: $0) },
+                makePayload: { ThreadDragPayload.beginning($0) }
+            )
+        }
         // 浮动批量条：用 overlay 不占布局空间，避免出现/消失时列表位移
         .overlay(alignment: .bottom) { batchBar }
         // 按删除键：删除所有选中的会话
         .onDeleteCommand {
             if !appState.selectedThreads.isEmpty {
-                performTrash(Array(appState.selectedThreads))
+                rows.performTrash(Array(appState.selectedThreads))
             }
         }
         // 按 ESC：取消选中
         .onExitCommand {
             if !appState.selectedThreads.isEmpty { appState.selectedThreads = [] }
+        }
+    }
+
+    // MARK: - 单行（含拖出邮件 / 拖入标签）
+
+    private func row(_ summary: ThreadSummary) -> some View {
+        // 传给行的必须全是可比较的值加一个稳定的引用；一旦混进闭包，
+        // SwiftUI 每次改选中都会重建整行并重新注册拖放，触发 NSTableView 重入。
+        ThreadListRow(
+            summary: summary,
+            labelMap: rows.labelMap,
+            accountBadge: badge(for: summary),
+            avatarReloadToken: appState.avatarReloadToken,
+            affinity: rows.labelDropAffinity(summary),
+            isDropTarget: rows.dropTargetKey == summary.key,
+            isArchivable: isArchivable
+        )
+        .tag(summary.key)
+        .listRowBackground(dropRowBackground(summary))
+        // 上报位置给拖拽层做命中判断（纯几何，不注册任何 AppKit 东西）
+        .background(GeometryReader { geo in
+            // 用窗口全局坐标：拖拽层是 AppKit 视图，拿不到 SwiftUI 的具名坐标空间
+            Color.clear.preference(key: RowFramesKey.self,
+                                   value: [summary.key: geo.frame(in: .global)])
+        })
+    }
+
+    /// 可放置的行给浅色底，鼠标悬停其上时加深；非拖拽态返回 nil 以保留系统的选中高亮。
+    private func dropRowBackground(_ summary: ThreadSummary) -> Color? {
+        guard rows.labelDropAffinity(summary) == .enabled else { return nil }
+        return rows.dropTargetKey == summary.key
+            ? Color.accentColor.opacity(0.32)
+            : Color.accentColor.opacity(0.15)
+    }
+
+    // MARK: - 过滤器（主按钮切换未读/全部，右侧箭头展开三档）
+
+    private var filterMenu: some View {
+        Menu {
+            Picker("过滤", selection: $readFilterRaw) {
+                ForEach(ReadFilter.allCases) { f in
+                    Label(f.title, systemImage: f.systemImage).tag(f.rawValue)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Image(systemName: readFilter == .all
+                  ? "line.3.horizontal.decrease.circle"
+                  : "line.3.horizontal.decrease.circle.fill")
+        } primaryAction: {
+            // 点主按钮：在「仅未读」和「全部」之间来回切
+            readFilterRaw = (readFilter == .unread ? ReadFilter.all : .unread).rawValue
+        }
+        .menuIndicator(.visible)
+        .help(readFilter == .all ? "只看未读" : "过滤：\(readFilter.title)")
+        .disabled(appState.selection == nil)
+    }
+
+    private var emptyTitle: String {
+        switch readFilter {
+        case .all: return conversationView ? "没有会话" : "没有邮件"
+        case .unread: return "没有未读邮件"
+        case .read: return "没有已读邮件"
         }
     }
 
@@ -125,14 +224,14 @@ struct ThreadListView: View {
             let sel = Array(appState.selectedThreads)
             HStack(spacing: 14) {
                 Text("已选 \(sel.count) 封").font(.callout).foregroundStyle(.secondary)
-                Button { performTrash(sel) } label: { Image(systemName: "trash") }.help("删除所选")
+                Button { rows.performTrash(sel) } label: { Image(systemName: "trash") }.help("删除所选")
                 if isArchivable {
-                    Button { performArchive(sel) } label: { Image(systemName: "archivebox") }.help("归档所选")
+                    Button { rows.performArchive(sel) } label: { Image(systemName: "archivebox") }.help("归档所选")
                 }
-                Button { Task { await model.mutateMany(sel, remove: ["UNREAD"]) } } label: {
+                Button { rows.markRead(sel) } label: {
                     Image(systemName: "envelope.open")
                 }.help("标记所选为已读")
-                Button { Task { await model.mutateMany(sel, add: ["STARRED"]) } } label: {
+                Button { rows.star(sel) } label: {
                     Image(systemName: "flag")
                 }.help("给所选加旗标")
                 Divider().frame(height: 14)
@@ -149,110 +248,10 @@ struct ThreadListView: View {
         }
     }
 
-    // MARK: - 滑动动作（纯图标）
-
-    @ViewBuilder
-    private func leadingSwipe(_ s: ThreadSummary) -> some View {
-        Button { toggleUnread(s) } label: {
-            Image(systemName: s.isUnread ? "envelope.open" : "envelope")
-        }.tint(.blue)
-        Button { toggleStar(s) } label: {
-            Image(systemName: s.isStarred ? "flag.slash" : "flag")
-        }.tint(.orange)
-    }
-
-    @ViewBuilder
-    private func trailingSwipe(_ s: ThreadSummary) -> some View {
-        Button(role: .destructive) { trash(s) } label: {
-            Image(systemName: "trash")
-        }
-        if isArchivable {
-            Button { archive(s) } label: {
-                Image(systemName: "archivebox")
-            }.tint(.blue)
-        }
-    }
-
-    @ViewBuilder
-    private func rowMenu(_ summary: ThreadSummary) -> some View {
-        let n = targets(summary).count
-        let suffix = n > 1 ? "（\(n) 封）" : ""
-        Button((summary.isUnread ? "标记为已读" : "标记为未读") + suffix) { toggleUnread(summary) }
-        Button((summary.isStarred ? "取消旗标" : "旗标") + suffix) { toggleStar(summary) }
-        if isArchivable {
-            Button("归档" + suffix) { archive(summary) }
-        }
-        Divider()
-        Button("删除" + suffix, role: .destructive) { trash(summary) }
-    }
-
     // MARK: - 行操作
 
     /// 当前邮箱是否支持“归档”（仅收件箱有意义）。
     private var isArchivable: Bool { appState.selection?.labelID == "INBOX" }
-
-    /// 行上手势/菜单的作用对象：若该行属于当前多选，则作用于整组，否则仅该行。
-    private func targets(_ summary: ThreadSummary) -> [SelectedThread] {
-        if appState.selectedThreads.count > 1, appState.selectedThreads.contains(summary.key) {
-            return Array(appState.selectedThreads)
-        }
-        return [summary.key]
-    }
-
-    private func toggleStar(_ summary: ThreadSummary) {
-        Task { await model.mutateMany(targets(summary), add: summary.isStarred ? [] : ["STARRED"],
-                                      remove: summary.isStarred ? ["STARRED"] : []) }
-    }
-
-    private func toggleUnread(_ summary: ThreadSummary) {
-        Task { await model.mutateMany(targets(summary), add: summary.isUnread ? [] : ["UNREAD"],
-                                      remove: summary.isUnread ? ["UNREAD"] : []) }
-    }
-
-    private func archive(_ summary: ThreadSummary) { performArchive(targets(summary)) }
-    private func trash(_ summary: ThreadSummary) { performTrash(targets(summary)) }
-
-    // MARK: - 批量执行（含删除/归档后自动选中下一封）
-
-    private func performTrash(_ keys: [SelectedThread]) {
-        let advance = advanceSelectionIfNeeded(removing: keys)
-        Task { await model.trashMany(keys) }
-        applyAdvance(advance, removed: keys)
-    }
-
-    private func performArchive(_ keys: [SelectedThread]) {
-        let advance = advanceSelectionIfNeeded(removing: keys)
-        Task { await model.mutateMany(keys, remove: ["INBOX"]) }
-        applyAdvance(advance, removed: keys)
-    }
-
-    /// 若删除/归档影响了当前选择，计算应自动选中的下一封（否则返回 nil 表示不改选择）。
-    private func advanceSelectionIfNeeded(removing keys: [SelectedThread]) -> SelectedThread?? {
-        let keySet = Set(keys)
-        guard !keySet.isDisjoint(with: appState.selectedThreads) else { return .none } // 不影响选择
-        // 找被删项在列表中的最大下标，选其后第一个未被删的；没有则选其前一个
-        let list = model.summaries
-        let removedIdxs = list.indices.filter { keySet.contains(list[$0].key) }
-        guard let last = removedIdxs.max() else { return .some(nil) }
-        if let n = (last + 1 ..< list.count).first(where: { !keySet.contains(list[$0].key) }) {
-            return .some(list[n].key)
-        }
-        if let p = (0 ..< last).reversed().first(where: { !keySet.contains(list[$0].key) }) {
-            return .some(list[p].key)
-        }
-        return .some(nil)
-    }
-
-    private func applyAdvance(_ advance: SelectedThread??, removed keys: [SelectedThread]) {
-        switch advance {
-        case .none:
-            // 不影响选择：仅把被删项从选择集移除（通常本就不在其中）
-            let keySet = Set(keys)
-            appState.selectedThreads.subtract(keySet)
-        case .some(let next):
-            appState.selectedThreads = next.map { [$0] } ?? []
-        }
-    }
 
     /// 聚合视图（accountID 为 nil）时给每行一个来源账号徽标。
     private func badge(for summary: ThreadSummary) -> Account? {
@@ -260,19 +259,122 @@ struct ThreadListView: View {
         return appState.accounts.first { $0.id == summary.accountID }
     }
 
-    /// 触发重新加载的依据：邮箱选择 + 显示方式。
+    /// 触发重新加载的依据：邮箱选择 + 显示方式 + 过滤。
     private struct ReloadKey: Hashable {
         let selection: MailboxSelection?
         let conversation: Bool
+        let filter: String
     }
 
     private var reloadKey: ReloadKey {
-        ReloadKey(selection: appState.selection, conversation: conversationView)
+        ReloadKey(selection: appState.selection, conversation: conversationView, filter: readFilterRaw)
     }
 
     private func reload() async {
         guard let sel = appState.selection else { return }
-        await model.load(accounts: selectionAccounts, labelID: sel.labelID, conversation: conversationView)
+        await model.load(accounts: selectionAccounts, labelID: sel.labelID,
+                         conversation: conversationView, filter: readFilter)
+    }
+}
+
+/// 列表行的外壳。
+///
+/// 字段刻意全部是可比较的值 + 一个长期存活的协调器引用，没有任何闭包：
+/// 这样点击换选中时，SwiftUI 比较下来发现行没变就整行跳过，不会重建行内容、
+/// 重新注册拖放 —— 那件事若发生在 NSTableView 的选择回调里，AppKit 会报 reentrant 警告，
+/// 用户看到的就是「点一封邮件整个界面刷新一下」。
+private struct ThreadListRow: View {
+    let summary: ThreadSummary
+    let labelMap: [String: GmailLabel]
+    let accountBadge: Account?
+    let avatarReloadToken: Int
+    let affinity: DropAffinity
+    let isDropTarget: Bool
+    let isArchivable: Bool
+
+    /// 静态访问，不作为字段存起来：字段里一旦有引用，行上的 modifier 就无法被判定为「没变」。
+    private var rows: ThreadRowCoordinator { .shared }
+
+    @ViewBuilder
+    var body: some View {
+        let base = ThreadRow(summary: summary, labelMap: labelMap,
+                  accountBadge: accountBadge, avatarReloadToken: avatarReloadToken)
+            .contextMenu { menu }
+            // 右滑：标记已读/未读、旗标；左滑：归档、删除（纯图标）
+            .swipeActions(edge: .leading, allowsFullSwipe: true) { leadingSwipe }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) { trailingSwipe }
+            .onAppear { rows.loadMoreIfNeeded(after: summary) }
+            .opacity(affinity.dimmed ? 0.35 : 1)
+            .animation(.easeOut(duration: 0.15), value: affinity.dimmed)
+
+        // 放置区只在真的拖着标签时才挂。onDrop 的闭包无法被 SwiftUI 判定为「没变」，
+        // 常挂着会让每次改选中都重新注册一次放置区 —— 那正是 NSTableView 重入的来源。
+        // 平时不挂既省掉重入，也让不可放置的行直接显示禁止光标。
+        if affinity == .enabled {
+            base.onDrop(of: [.mgmailLabel], isTargeted: Binding(
+                get: { isDropTarget },
+                set: { ThreadRowCoordinator.shared.setDropTarget($0, key: summary.key) }
+            )) { ThreadRowCoordinator.shared.acceptLabelDrop($0, on: summary) }
+        } else {
+            base
+        }
+    }
+
+    @ViewBuilder
+    private var leadingSwipe: some View {
+        Button { rows.toggleUnread(summary) } label: {
+            Image(systemName: summary.isUnread ? "envelope.open" : "envelope")
+        }.tint(.blue)
+        Button { rows.toggleStar(summary) } label: {
+            Image(systemName: summary.isStarred ? "flag.slash" : "flag")
+        }.tint(.orange)
+    }
+
+    @ViewBuilder
+    private var trailingSwipe: some View {
+        Button(role: .destructive) { rows.trash(summary) } label: {
+            Image(systemName: "trash")
+        }
+        if isArchivable {
+            Button { rows.archive(summary) } label: {
+                Image(systemName: "archivebox")
+            }.tint(.blue)
+        }
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        let n = rows.targets(summary).count
+        let suffix = n > 1 ? "（\(n) 封）" : ""
+        Button((summary.isUnread ? "标记为已读" : "标记为未读") + suffix) { rows.toggleUnread(summary) }
+        Button((summary.isStarred ? "取消旗标" : "旗标") + suffix) { rows.toggleStar(summary) }
+        if isArchivable {
+            Button("归档" + suffix) { rows.archive(summary) }
+        }
+        labelSubmenu(suffix)
+        Divider()
+        Button("删除" + suffix, role: .destructive) { rows.trash(summary) }
+    }
+
+    /// 右键里的标签子菜单：勾选即加、取消即去，一次一个请求。
+    @ViewBuilder
+    private func labelSubmenu(_ suffix: String) -> some View {
+        let prefix = "\(summary.accountID)\t"
+        let mine = labelMap.filter { $0.key.hasPrefix(prefix) }.map(\.value)
+            .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+        if !mine.isEmpty {
+            Divider()
+            Menu("标签" + suffix) {
+                ForEach(mine) { label in
+                    let on = summary.labelIds.contains(label.id)
+                    Button {
+                        rows.toggleLabel(label.id, on: summary, currentlyOn: on)
+                    } label: {
+                        Label(label.name, systemImage: on ? "checkmark.circle.fill" : "circle")
+                    }
+                }
+            }
+        }
     }
 }
 
