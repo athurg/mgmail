@@ -105,6 +105,40 @@ struct Attachment: Codable, Identifiable, Hashable {
     }
 }
 
+// MARK: - 增量同步（users.history）
+
+struct GmailProfile: Decodable {
+    let emailAddress: String?
+    /// 账号当前的 historyId，作为下次增量同步的起点。
+    let historyId: String?
+}
+
+struct HistoryListResponse: Decodable {
+    let history: [HistoryRecord]?
+    let nextPageToken: String?
+    /// 本次拉取后的最新 historyId，存下来作为下次起点。
+    let historyId: String?
+}
+
+/// 一条历史记录。同一条里可能同时有多种变化。
+struct HistoryRecord: Decodable {
+    let id: String
+    let messagesAdded: [HistoryMessageChange]?
+    let messagesDeleted: [HistoryMessageChange]?
+    let labelsAdded: [HistoryLabelChange]?
+    let labelsRemoved: [HistoryLabelChange]?
+}
+
+struct HistoryMessageChange: Decodable {
+    let message: GmailMessage
+}
+
+struct HistoryLabelChange: Decodable {
+    let message: GmailMessage
+    /// 本次变动涉及的标签。
+    let labelIds: [String]?
+}
+
 // MARK: - 标签修改请求体
 
 struct ModifyRequest: Encodable {

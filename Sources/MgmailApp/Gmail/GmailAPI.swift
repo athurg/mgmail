@@ -133,6 +133,33 @@ struct GmailAPI {
         _ = try await send(path: "/messages/\(id)/modify", method: "POST", body: body)
     }
 
+    // MARK: - 增量同步
+
+    /// 取账号档案，主要是为了拿当前 historyId 作为增量同步的起点。
+    func getProfile() async throws -> GmailProfile {
+        let data = try await send(path: "/profile")
+        return try decode(GmailProfile.self, data)
+    }
+
+    /// 拉取自 `startHistoryId` 以来的变化。
+    ///
+    /// startHistoryId 太旧时 Gmail 返回 404（Gmail 只保留约一周的历史），
+    /// 调用方需要据此回退到全量刷新。
+    func listHistory(startHistoryId: String, pageToken: String? = nil,
+                     maxResults: Int = 500) async throws -> HistoryListResponse {
+        var items: [URLQueryItem] = [
+            .init(name: "startHistoryId", value: startHistoryId),
+            .init(name: "maxResults", value: String(maxResults)),
+        ]
+        // 只关心这四类；不加的话连 draft 变化都会回来
+        for type in ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"] {
+            items.append(.init(name: "historyTypes", value: type))
+        }
+        if let pageToken { items.append(.init(name: "pageToken", value: pageToken)) }
+        let data = try await send(path: "/history", query: items)
+        return try decode(HistoryListResponse.self, data)
+    }
+
     // MARK: - 附件
 
     func getAttachment(messageID: String, attachmentId: String) async throws -> Data {
@@ -148,34 +175,61 @@ struct GmailAPI {
     // MARK: - 底层请求
 
     private func send(path: String, method: String = "GET", query: [URLQueryItem] = [], body: Data? = nil) async throws -> Data {
-        try await sendInternal(path: path, method: method, query: query, body: body, allowRetry: true)
-    }
-
-    private func sendInternal(path: String, method: String, query: [URLQueryItem], body: Data?, allowRetry: Bool) async throws -> Data {
         var comps = URLComponents(string: base + path)!
         if !query.isEmpty { comps.queryItems = query }
-        var request = URLRequest(url: comps.url!)
-        request.httpMethod = method
+        return try await sendRaw(url: comps.url!, method: method, body: body,
+                                 contentType: body == nil ? nil : "application/json")
+    }
 
-        let token = try await AuthManager.shared.validAccessToken(for: account, forceRefresh: !allowRetry)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        if let body {
-            request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    /// 所有 Gmail 请求的唯一出口：忙碌计数 → 并发闸门 → token 注入 → 401 刷新重试 → 限流退避重试。
+    func sendRaw(url: URL, method: String, body: Data?, contentType: String?) async throws -> Data {
+        let account = self.account
+        await NetworkActivity.shared.begin(account)
+        await RequestGate.shared.acquire()
+        defer {
+            Task {
+                await RequestGate.shared.release()
+                await NetworkActivity.shared.end(account)
+            }
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw GmailError.http(-1, "无响应")
-        }
-        if http.statusCode == 401 && allowRetry {
-            // access token 可能过期，强制刷新后重试一次
-            return try await sendInternal(path: path, method: method, query: query, body: body, allowRetry: false)
-        }
-        guard (200..<300).contains(http.statusCode) else {
+        var refreshedOnce = false
+        var attempt = 0
+
+        while true {
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            let token = try await AuthManager.shared.validAccessToken(for: account,
+                                                                     forceRefresh: refreshedOnce)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            if let body {
+                request.httpBody = body
+                if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+            }
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw GmailError.http(-1, "无响应")
+            }
+
+            if (200..<300).contains(http.statusCode) { return data }
+
+            // access token 过期：强制刷新后重来一次
+            if http.statusCode == 401, !refreshedOnce {
+                refreshedOnce = true
+                continue
+            }
+
+            // 限流 / 服务端抖动：退避后重试
+            if attempt < RetryPolicy.maxAttempts,
+               RetryPolicy.shouldRetry(status: http.statusCode, body: data) {
+                attempt += 1
+                try? await Task.sleep(for: RetryPolicy.delay(attempt: attempt))
+                continue
+            }
+
             throw GmailError.http(http.statusCode, String(data: data, encoding: .utf8) ?? "")
         }
-        return data
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {

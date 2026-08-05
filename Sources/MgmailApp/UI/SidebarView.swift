@@ -33,6 +33,8 @@ struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
     @ObservedObject private var drag = DragMonitor.shared
+    /// 各账号是否有网络请求在飞，用于在账号条目上显示忙碌指示。
+    @ObservedObject private var activity = NetworkActivity.shared
     @State private var expandedLabels: Set<String> = LabelExpansionStore.load()
     /// 自定义标签分组里被折叠的账户（默认展开，记录“已折叠”）。
     @State private var collapsedAccounts: Set<String> = LabelExpansionStore.loadCollapsed()
@@ -198,7 +200,17 @@ struct SidebarView: View {
                         .truncationMode(.tail)
                 }
             }
+            Spacer(minLength: 4)
+            // 该账号有请求在飞时转圈：加载列表、增量同步、打标签、下载附件都算
+            if activity.busyAccounts.contains(account.id) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.15), value: activity.busyAccounts.contains(account.id))
         .help(account.email)
         .contextMenu {
             Button("新建标签…") {
@@ -292,7 +304,7 @@ private struct LabelNodeView: View {
                                                     conversation: conversation) {
                 appState.errorMessage = error
             }
-            appState.threadsDidChange(payload.items)
+            appState.threadsDidChange(payload.items, add: [label.id])
         }
         return true
     }
