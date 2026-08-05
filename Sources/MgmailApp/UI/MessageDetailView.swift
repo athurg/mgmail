@@ -11,6 +11,8 @@ struct MessageDetailView: View {
     @State private var expanded: Set<String> = []
     /// 上次据以计算默认展开的消息 id 集合；用于避免联网刷新后重复重置、覆盖用户手动展开。
     @State private var expansionBasis: Set<String> = []
+    /// 全局设置：是否按会话显示邮件。关闭时右栏只展示选中的那一封。
+    @AppStorage(SettingsKey.conversationView) private var conversationView = false
 
     var body: some View {
         Group {
@@ -81,7 +83,7 @@ struct MessageDetailView: View {
     }
 
     private var taskKey: String {
-        "\(appState.singleSelection?.accountID ?? "")|\(appState.singleSelection?.threadID ?? "")"
+        "\(appState.singleSelection?.accountID ?? "")|\(appState.singleSelection?.threadID ?? "")|\(conversationView)"
     }
 
     private var content: some View {
@@ -132,7 +134,8 @@ struct MessageDetailView: View {
         // 切换会话：先清掉旧的展开依据，保证下面 seed 命中后一定重算展开。
         expansionBasis = []
         // 1) 先只读缓存并立即展开正文（命中时无需等联网，正文瞬时可见）。
-        await model.seedFromCache(account: selected.accountID, threadID: selected.threadID)
+        await model.seedFromCache(account: selected.accountID, threadID: selected.threadID,
+                                  conversation: conversationView)
         applyDefaultExpansion()
         // 2) 再联网增量刷新；仅当消息集合变化时才会再次调整展开。
         await model.refresh(account: selected.accountID, threadID: selected.threadID)

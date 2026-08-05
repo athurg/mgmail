@@ -41,11 +41,12 @@ actor MailCache {
 
     // MARK: - 会话正文
 
-    func thread(account: String, threadID: String) -> CachedThread? {
-        load(CachedThread.self, account: account, kind: "thread", key: threadID)
+    /// `conversation == false` 时存的是单封邮件（消息 id 与会话 id 可能相同，必须分目录）。
+    func thread(account: String, threadID: String, conversation: Bool = true) -> CachedThread? {
+        load(CachedThread.self, account: account, kind: conversation ? "thread" : "message", key: threadID)
     }
-    func saveThread(_ thread: CachedThread, account: String, threadID: String) {
-        save(thread, account: account, kind: "thread", key: threadID)
+    func saveThread(_ thread: CachedThread, account: String, threadID: String, conversation: Bool = true) {
+        save(thread, account: account, kind: conversation ? "thread" : "message", key: threadID)
     }
 
     // MARK: - 内联图片（data URI，按 消息+附件 id 缓存，内容不变可长期复用）

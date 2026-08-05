@@ -5,6 +5,8 @@ struct ThreadListView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
     @StateObject private var model = ThreadListModel()
+    /// 全局设置：是否按会话显示邮件。默认关闭（每行一封独立邮件）。
+    @AppStorage(SettingsKey.conversationView) private var conversationView = false
 
     /// 当前选择涉及的账号（聚合视图为当前分组内账号）。
     private var selectionAccounts: [String] {
@@ -39,7 +41,7 @@ struct ThreadListView: View {
             } else if model.summaries.isEmpty && model.isLoading {
                 ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.summaries.isEmpty {
-                ContentUnavailableView("没有邮件", systemImage: "tray")
+                ContentUnavailableView(conversationView ? "没有会话" : "没有邮件", systemImage: "tray")
             } else {
                 list
             }
@@ -58,9 +60,14 @@ struct ThreadListView: View {
                 }
             }
         }
-        .task(id: appState.selection) {
-            // 首次加载或选择变化时重新加载
+        .task(id: reloadKey) {
+            // 首次加载、选择变化、或切换会话/单封显示方式时重新加载
             await reload()
+        }
+        .onChange(of: conversationView) { _, _ in
+            // 两种模式的行 id 语义不同（threadId ↔ messageId），旧选择必须清空
+            appState.selectedThreads = []
+            appState.selectedInfos = []
         }
         .onChange(of: appState.lastThreadChange) { _, change in
             guard let change else { return }
@@ -253,9 +260,19 @@ struct ThreadListView: View {
         return appState.accounts.first { $0.id == summary.accountID }
     }
 
+    /// 触发重新加载的依据：邮箱选择 + 显示方式。
+    private struct ReloadKey: Hashable {
+        let selection: MailboxSelection?
+        let conversation: Bool
+    }
+
+    private var reloadKey: ReloadKey {
+        ReloadKey(selection: appState.selection, conversation: conversationView)
+    }
+
     private func reload() async {
         guard let sel = appState.selection else { return }
-        await model.load(accounts: selectionAccounts, labelID: sel.labelID)
+        await model.load(accounts: selectionAccounts, labelID: sel.labelID, conversation: conversationView)
     }
 }
 
