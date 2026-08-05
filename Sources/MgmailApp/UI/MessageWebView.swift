@@ -33,10 +33,41 @@ final class PassthroughWebView: WKWebView {
     }
 }
 
+/// 正文卡片的高度记忆与 WebKit 预热。
+///
+/// 切换邮件时每封正文都是一个新建的 WKWebView，而它要等 WebKit 渲染进程起来、
+/// HTML 解析完、脚本回报高度之后才撑得开——在此之前卡片只有初始高度，
+/// 用户看到的就是「标题已经换了，正文却空着」。这里从两头缩短那段空白：
+/// 提前把渲染进程拉起来，并记住每封邮件量到过的高度，再打开时直接按那个高度铺开。
+@MainActor
+enum MessageBodyLayout {
+    private static var heights: [String: CGFloat] = [:]
+    private static var warmup: WKWebView?
+
+    static func height(for messageID: String) -> CGFloat {
+        heights[messageID] ?? 40
+    }
+
+    static func remember(_ height: CGFloat, for messageID: String) {
+        heights[messageID] = height
+    }
+
+    /// 提前起一个空 WebView，把 WebKit 的渲染进程拉起来，
+    /// 第一封邮件的正文就不必等进程冷启动。
+    static func warmUp() {
+        guard warmup == nil else { return }
+        let view = WKWebView(frame: .zero)
+        view.loadHTMLString("<html><body></body></html>", baseURL: nil)
+        warmup = view
+    }
+}
+
 /// 用 WKWebView 渲染邮件 HTML 正文，自适应高度，默认拦截远程内容。
 struct MessageWebView: NSViewRepresentable {
     let html: String
     let blockRemote: Bool
+    /// 用来记住这封正文的高度，下次打开直接按它铺开。
+    var messageID: String = ""
     @Binding var height: CGFloat
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -75,7 +106,15 @@ struct MessageWebView: NSViewRepresentable {
         /// 收到页面回传的内容高度变化，同步更新宿主 frame，避免内部产生溢出滚动。
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "heightChanged", let h = message.body as? CGFloat else { return }
-            Task { @MainActor in self.parent.height = max(h, 40) }
+            Task { @MainActor in self.apply(max(h, 40)) }
+        }
+
+        @MainActor
+        private func apply(_ height: CGFloat) {
+            parent.height = height
+            if !parent.messageID.isEmpty {
+                MessageBodyLayout.remember(height, for: parent.messageID)
+            }
         }
 
         func load(in webView: WKWebView) {
@@ -98,7 +137,7 @@ struct MessageWebView: NSViewRepresentable {
             disableInternalScrollElasticity(webView)
             webView.evaluateJavaScript("document.body.scrollHeight") { result, _ in
                 if let h = result as? CGFloat {
-                    Task { @MainActor in self.parent.height = max(h, 40) }
+                    Task { @MainActor in self.apply(max(h, 40)) }
                 }
             }
         }

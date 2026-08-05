@@ -54,13 +54,14 @@ final class AppState: ObservableObject {
     /// 是否已配置 OAuth 客户端（oauth_client.json 是否存在且可解析）。
     @Published var hasOAuthConfig: Bool = false
 
-    /// 会话被修改（读/星标/标签/归档）后广播，供列表刷新对应行。
-    @Published var lastThreadChange: ThreadChange?
-    private var changeToken = 0
 
     /// 详情栏发起的删除请求，由中栏列表执行（复用列表的移除 + 自动选中下一封逻辑）。
     @Published var trashRequest: ThreadRequest?
     private var requestToken = 0
+
+    /// 侧栏「刷新」按钮发来的同步请求，由中栏列表执行。
+    @Published var syncRequest: SyncRequest?
+    private var syncToken = 0
 
     /// 头像缓存更新计数（下载完成后自增，驱动头像视图刷新）。
     @Published var avatarReloadToken = 0
@@ -68,23 +69,18 @@ final class AppState: ObservableObject {
     /// 正在编辑/新建的标签（驱动标签编辑面板）。
     @Published var labelEditTarget: LabelEditTarget?
 
-    /// 广播某会话发生了变化。已知标签增删时一并带上，收到方就能免去一次网络确认。
-    func threadDidChange(account: String, id: String, add: [String] = [], remove: [String] = []) {
-        threadsDidChange([SelectedThread(accountID: account, threadID: id)], add: add, remove: remove)
-    }
-
-    /// 广播一批会话发生了变化（批量打标签等）。
-    func threadsDidChange(_ items: [SelectedThread], add: [String] = [], remove: [String] = []) {
-        guard !items.isEmpty else { return }
-        changeToken += 1
-        lastThreadChange = ThreadChange(items: items, add: add, remove: remove, token: changeToken)
-    }
-
     /// 请求删除某封邮件/会话（由中栏列表实际执行）。
     func requestTrash(account: String, id: String) {
         requestToken += 1
         trashRequest = ThreadRequest(account: account, id: id, token: requestToken)
     }
+
+    /// 请求同步（侧栏刷新按钮）。`account` 为 nil 表示当前列表涉及的全部账号。
+    func requestSync(account: String?) {
+        syncToken += 1
+        syncRequest = SyncRequest(accountID: account, token: syncToken)
+    }
+
 
     init() {
         accounts = AccountStore.load()
@@ -318,24 +314,16 @@ struct SelectedThreadInfo: Hashable {
     let date: Date?
 }
 
-/// 会话变更事件（可含多条，供批量打标签后一次性刷新）。
-///
-/// 带上具体的标签增删后，列表可以本地算出新状态，
-/// 不必为每一行再 get 一次去确认「我们本来就知道的结果」。
-struct ThreadChange: Equatable {
-    let items: [SelectedThread]
-    let add: [String]
-    let remove: [String]
-    let token: Int
-
-    /// 变更内容已知，收到方可以本地更新。
-    var isLabelChange: Bool { !add.isEmpty || !remove.isEmpty }
-}
-
 /// 由详情栏发起、交给列表执行的操作请求。
 struct ThreadRequest: Equatable {
     let account: String
     let id: String
+    let token: Int
+}
+
+/// 由侧栏发起、交给列表执行的同步请求（`accountID` 为 nil 表示全部账号）。
+struct SyncRequest: Equatable {
+    let accountID: String?
     let token: Int
 }
 

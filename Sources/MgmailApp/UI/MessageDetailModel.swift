@@ -10,7 +10,6 @@ struct RenderedMessage: Codable, Identifiable {
     let subject: String
     let bodyHTML: String
     let attachments: [Attachment]
-    let isUnread: Bool
     /// 折叠态用的预览摘要（Gmail 提供的 snippet）。可选以兼容旧缓存解码。
     let snippet: String?
 
@@ -24,19 +23,17 @@ struct RenderedMessage: Codable, Identifiable {
     /// 返回替换了正文的副本。
     func withBody(_ html: String) -> RenderedMessage {
         RenderedMessage(id: id, fromName: fromName, fromEmail: fromEmail, to: to, date: date,
-                        subject: subject, bodyHTML: html, attachments: attachments, isUnread: isUnread,
-                        snippet: snippet)
-    }
-
-    /// 返回改了未读状态的副本。
-    func withUnread(_ unread: Bool) -> RenderedMessage {
-        RenderedMessage(id: id, fromName: fromName, fromEmail: fromEmail, to: to, date: date,
-                        subject: subject, bodyHTML: bodyHTML, attachments: attachments, isUnread: unread,
-                        snippet: snippet)
+                        subject: subject, bodyHTML: html, attachments: attachments, snippet: snippet)
     }
 }
 
-/// 加载并渲染某个会话的全部邮件。
+/// 加载并渲染某个会话（或单封邮件）的正文。
+///
+/// 正文是不可变的，所以规则很简单：**一封邮件（或一串会话）一辈子只拉一次**。
+/// 缓存里有就直接用，没有就拉一次并写进缓存，此后再打开都不联网。
+///
+/// 邮件的属性（读没读、有没有星标、在哪个邮箱）不在这里——那些全是标签，
+/// 由 `MailStore` 的账户池统一持有，详情栏只是读它，所以永远和列表一致。
 @MainActor
 final class MessageDetailModel: ObservableObject {
     @Published var subject: String = ""
@@ -44,13 +41,23 @@ final class MessageDetailModel: ObservableObject {
     @Published var isLoading = false
     @Published var loadError: String?
 
-    /// 会话当前的标签集合（所有邮件 labelIds 的并集）。
-    @Published var threadLabelIds: Set<String> = []
-
     private(set) var account: String?
     private(set) var threadID: String?
     /// 是否按会话显示；false 时 `threadID` 实为 messageId，只加载这一封。
     private(set) var conversation = true
+
+    private var store: MailStore?
+
+    func bind(to store: MailStore) {
+        self.store = store
+    }
+
+    // MARK: - 属性（全部来自池子，这里不存副本）
+
+    var threadLabelIds: Set<String> {
+        guard let store, let account, let threadID else { return [] }
+        return store.labels(account: account, threadID: threadID, conversation: conversation)
+    }
 
     var isUnread: Bool { threadLabelIds.contains("UNREAD") }
     var isStarred: Bool { threadLabelIds.contains("STARRED") }
@@ -58,40 +65,45 @@ final class MessageDetailModel: ObservableObject {
     /// 是否带有用户自建标签（Gmail 的用户标签 id 统一以 "Label_" 开头）。
     var hasUserLabels: Bool { threadLabelIds.contains { $0.hasPrefix("Label_") } }
 
-    /// 只用磁盘缓存 seed 显示，立即返回（不联网）。返回是否命中缓存。
-    /// 拆出这一步是为了让调用方在缓存命中后能「立刻」展开正文，
-    /// 而不必等后面的联网刷新完成（否则正文卡片会白等几秒才展开）。
-    @discardableResult
-    func seedFromCache(account: String, threadID: String, conversation: Bool) async -> Bool {
+    /// 池子里这一行对应的邮件 id（会话模式下是整串）。
+    var messageIDs: [String] {
+        guard let store, let account, let threadID else { return [] }
+        if conversation {
+            return store.threadMessages(account: account, threadID: threadID).map(\.id)
+        }
+        return [threadID]
+    }
+
+    /// 某封邮件当前是否未读（卡片上的小圆点）。
+    func isUnread(_ messageID: String) -> Bool {
+        store?.message(account: account ?? "", id: messageID)?.isUnread ?? false
+    }
+
+    // MARK: - 正文
+
+    /// 打开一封邮件/一串会话：缓存有就用缓存（不联网），没有才拉一次。
+    func open(account: String, threadID: String, conversation: Bool) async {
         self.account = account
         self.threadID = threadID
         self.conversation = conversation
         loadError = nil
 
-        // 先从缓存 seed（瞬时显示，含已内联的图片）
-        if let cached = await MailCache.shared.thread(account: account, threadID: threadID, conversation: conversation) {
-            guard self.threadID == threadID else { return false }
+        if let cached = await MailCache.shared.thread(account: account, threadID: threadID,
+                                                     conversation: conversation) {
+            guard self.threadID == threadID else { return }
             messages = cached.messages
             subject = cached.subject
-            threadLabelIds = Set(cached.threadLabelIds)
-            return true
-        } else {
-            messages = []
-            return false
+            return
         }
+        messages = []
+        subject = ""
+        await fetch(account: account, threadID: threadID)
     }
 
-    /// 联网拉最新并写回缓存（SWR 的 R）。在 seedFromCache 之后调用。
-    func refresh(account: String, threadID: String) async {
+    /// 从服务器取正文，解析内联图片后写进缓存。一次请求拿完。
+    private func fetch(account: String, threadID: String) async {
         isLoading = true
         defer { isLoading = false }
-        await refreshFromServer(account: account, threadID: threadID)
-    }
-
-    /// 从服务器拉全量会话，重渲染（含内联图片解析）并写回缓存。尽力而为。
-    /// 先把内联图片全部解析好，再一次性设置，避免出现「原始 cid → 解析后」的中间态闪烁；
-    /// 内联图片按 消息+附件 id 缓存，不再每次打开都重下大图。
-    private func refreshFromServer(account: String, threadID: String) async {
         do {
             let api = GmailAPI(account: account)
             let raw: [GmailMessage]
@@ -102,32 +114,30 @@ final class MessageDetailModel: ObservableObject {
             }
             guard self.threadID == threadID else { return } // 期间已切换
 
+            // 先把内联图片全部解析好再一次性设置，避免出现「原始 cid → 解析后」的中间态闪烁
             var rendered = raw.map { Self.render($0) }
-            rendered = await resolveInline(rendered, rawMessages: raw, account: account, threadID: threadID)
+            rendered = await resolveInline(rendered, rawMessages: raw, account: account)
             guard self.threadID == threadID else { return }
 
-            // 一次性设置最终结果（正文 HTML 与缓存一致时 WKWebView 不会重载，无闪烁）
             messages = rendered
             subject = rendered.first?.subject ?? "（无主题）"
-            threadLabelIds = Set(raw.flatMap { $0.labelIds ?? [] })
-            await saveCache(account: account, threadID: threadID)
+            let cached = CachedThread(subject: subject, messages: rendered)
+            await MailCache.shared.saveThread(cached, account: account, threadID: threadID,
+                                              conversation: conversation)
         } catch {
-            // 有缓存则保留展示；完全无内容时才报错
-            if messages.isEmpty {
-                loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
-    /// 把当前渲染结果写入磁盘缓存。
-    private func saveCache(account: String, threadID: String) async {
-        let cached = CachedThread(subject: subject, messages: messages, threadLabelIds: Array(threadLabelIds))
-        await MailCache.shared.saveThread(cached, account: account, threadID: threadID, conversation: conversation)
+    /// 会话里多了新邮件时重取（同步发现变化才会调用）。
+    func reloadBody() async {
+        guard let account, let threadID else { return }
+        await fetch(account: account, threadID: threadID)
     }
 
     /// 把正文里的 `cid:` 内联图片替换为 data URI；优先用缓存，缺失才下载并缓存。
     private func resolveInline(_ rendered: [RenderedMessage], rawMessages: [GmailMessage],
-                              account: String, threadID: String) async -> [RenderedMessage] {
+                               account: String) async -> [RenderedMessage] {
         var result = rendered
         for message in rawMessages {
             let inlines = MimeParser.inlineImages(message.payload)
@@ -157,29 +167,22 @@ final class MessageDetailModel: ObservableObject {
 
     // MARK: - 修改（读/星标/归档/标签）
 
-    /// 应用一次标签增删；modify 本身失败会抛错给调用方。
-    ///
-    /// 成功后只在本地更新标签集合，不再回头全量重拉。
-    /// 之前每加一个标签都要把整串会话连正文带内联图片重新拉一遍，
-    /// 而我们要的信息不过是「标签集合变了」——那是本地就能算出来的。
+    /// 应用一次标签增删：本地池子立刻更新，请求失败则抛给调用方。
     func modify(add: [String] = [], remove: [String] = []) async throws {
-        guard let account, let threadID else { return }
-        let api = GmailAPI(account: account)
-        if conversation {
-            try await api.modifyThread(id: threadID, add: add, remove: remove)
-        } else {
-            try await api.modifyMessage(id: threadID, add: add, remove: remove)
+        guard let account, let threadID, let store else { return }
+        let ids = messageIDs
+        store.applyLabels(account: account, messageIDs: ids, add: add, remove: remove)
+        do {
+            let api = GmailAPI(account: account)
+            if conversation {
+                try await api.modifyThread(id: threadID, add: add, remove: remove)
+            } else {
+                try await api.modifyMessage(id: threadID, add: add, remove: remove)
+            }
+        } catch {
+            await store.revalidate(account: account, messageIDs: ids)
+            throw error
         }
-
-        threadLabelIds.formUnion(add)
-        threadLabelIds.subtract(remove)
-        // 未读状态影响卡片上的小圆点，跟着一起改
-        if remove.contains("UNREAD") {
-            messages = messages.map { $0.withUnread(false) }
-        } else if add.contains("UNREAD") {
-            messages = messages.map { $0.withUnread(true) }
-        }
-        await saveCache(account: account, threadID: threadID)
     }
 
     func setUnread(_ unread: Bool) async throws {
@@ -225,7 +228,6 @@ final class MessageDetailModel: ObservableObject {
             subject: subject,
             bodyHTML: body,
             attachments: MimeParser.attachments(message.payload, messageID: message.id),
-            isUnread: message.isUnread,
             snippet: message.snippet
         )
     }

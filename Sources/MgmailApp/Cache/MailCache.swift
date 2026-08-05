@@ -1,12 +1,15 @@
 import Foundation
 import CryptoKit
 
-/// 缓存的会话正文（渲染后，含内联图片 data URI），用于打开会话时瞬时显示。
+/// 缓存的会话正文（渲染后，含内联图片 data URI）。
+///
+/// 只存正文——那是不可变的，存下来就一直有效。读没读、有没有星标这些属性
+/// 全在 `MailStore` 的账户池里，不在这儿留副本，也就不会不一致。
 struct CachedThread: Codable {
     let subject: String
     let messages: [RenderedMessage]
-    let threadLabelIds: [String]
 }
+
 
 /// 磁盘 JSON 缓存：标签 / 会话列表摘要 / 会话正文，按账户分目录。
 /// 用 actor 把文件读写放到主线程外，并串行化访问。
@@ -40,13 +43,13 @@ actor MailCache {
         save(id, account: account, kind: "sync", key: "historyId")
     }
 
-    // MARK: - 会话列表摘要（每个邮箱一份，缓存首屏）
+    // MARK: - 账户邮件池（全应用唯一的一份邮件数据）
 
-    func summaries(account: String, labelID: String) -> [ThreadSummary]? {
-        load([ThreadSummary].self, account: account, kind: "list", key: labelID)
+    func pool(account: String) -> AccountPool? {
+        load(AccountPool.self, account: account, kind: "pool", key: "pool")
     }
-    func saveSummaries(_ summaries: [ThreadSummary], account: String, labelID: String) {
-        save(summaries, account: account, kind: "list", key: labelID)
+    func savePool(_ pool: AccountPool, account: String) {
+        save(pool, account: account, kind: "pool", key: "pool")
     }
 
     // MARK: - 会话正文

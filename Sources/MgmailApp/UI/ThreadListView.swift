@@ -4,6 +4,7 @@ import SwiftUI
 struct ThreadListView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
+    @EnvironmentObject private var mailStore: MailStore
     @StateObject private var model = ThreadListModel()
     /// 全局设置：是否按会话显示邮件。默认关闭（每行一封独立邮件）。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
@@ -13,8 +14,14 @@ struct ThreadListView: View {
     @ObservedObject private var rows = ThreadRowCoordinator.shared
     /// 拖拽状态：只有列表和侧栏订阅它，拖动时不会连累详情栏重绘。
     @ObservedObject private var drag = DragMonitor.shared
-    /// 后台增量同步的节奏控制。
+    /// 各账号是否有请求在飞（工具栏刷新按钮据此转圈）。
+    @ObservedObject private var activity = NetworkActivity.shared
+    /// 定时刷新的节奏控制。
     @StateObject private var sync = SyncScheduler()
+    /// 冷启动的第一次刷新还没跑完（此时列表空白该显示转圈而不是「没有邮件」）。
+    @State private var isFirstLoad = true
+    /// 冷启动那次全账号刷新已经跑过了，后面切分组不该再来一遍。
+    @State private var didColdStart = false
 
     private var readFilter: ReadFilter { ReadFilter(rawValue: readFilterRaw) ?? .all }
 
@@ -40,18 +47,14 @@ struct ThreadListView: View {
         Group {
             if appState.selection == nil {
                 ContentUnavailableView("未选择邮箱", systemImage: "tray")
-            } else if let error = model.loadError, model.summaries.isEmpty {
-                ContentUnavailableView {
-                    Label("加载失败", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(error)
-                } actions: {
-                    Button("重试") { Task { await reload() } }
-                }
-            } else if model.summaries.isEmpty && model.isLoading {
+            } else if model.summaries.isEmpty && isFirstLoad {
                 ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.summaries.isEmpty {
-                ContentUnavailableView(emptyTitle, systemImage: readFilter == .all ? "tray" : "line.3.horizontal.decrease.circle")
+                ContentUnavailableView {
+                    Label(emptyTitle, systemImage: readFilter == .all ? "tray" : "line.3.horizontal.decrease.circle")
+                } description: {
+                    Text(emptyHint)
+                }
             } else {
                 list
             }
@@ -59,11 +62,10 @@ struct ThreadListView: View {
         .navigationTitle(appState.selection?.labelName ?? "收件箱")
         .toolbar {
             ToolbarItem {
-                // 手动刷新走增量同步：没变化时只是一个 history.list，比重拉整页省得多。
                 // 忙碌时不换成 ProgressView，而是原地把图标换成转圈——
                 // 换控件会让按钮尺寸变化，工具栏跟着跳一下。
-                let busy = model.isLoading || sync.isSyncing
-                Button { Task { await sync.syncNow() } } label: {
+                let busy = isRefreshing
+                Button { refresh() } label: {
                     Image(systemName: "arrow.clockwise")
                         .opacity(busy ? 0 : 1)
                         .overlay {
@@ -75,34 +77,57 @@ struct ThreadListView: View {
             }
             ToolbarItem { filterMenu }
         }
-        .task(id: reloadKey) {
-            // 首次加载、选择变化、或切换会话/单封显示方式时重新加载
-            await reload()
+        // 选择/显示方式/过滤器变化：纯本地重算，不联网
+        .onChange(of: viewKey, initial: true) { _, _ in
+            // 协调器的引用在这里就绪，不依赖列表有没有内容（空邮箱时 list 不会被求值）
+            rows.model = model
+            rows.appState = appState
+            model.bind(to: mailStore)
+            model.configure(accounts: selectionAccounts, labelID: appState.selection?.labelID ?? "",
+                            conversation: conversationView, filter: readFilter)
+            // 垃圾邮件/废纸篓不在账户级拉取的返回范围内，第一次点进去才去要
+            if let selection = appState.selection {
+                Task { await ensureSpecialMailbox(selection) }
+            }
+        }
+        .task(id: appState.activeAccounts.map(\.id)) {
+            let ids = appState.activeAccounts.map(\.id)
+            // 先恢复磁盘上的池子，不联网
+            await mailStore.restore(accounts: ids)
+            if didColdStart {
+                // 切分组带进来的新账号：它还没有自己的「冷启动」，补一次
+                for id in ids where mailStore.isEmpty(account: id) {
+                    await MailRefresh.account(id, labels: labelStore, mail: mailStore)
+                }
+            } else {
+                didColdStart = true
+                await MailRefresh.accounts(ids, labels: labelStore, mail: mailStore)
+            }
+            isFirstLoad = false
         }
         .task {
-            // 定时 + 回到 app 时增量同步。账号每次现取，分组切换后自动跟上。
-            sync.start(accounts: { model.loadedAccounts }) { account in
-                let outcome = await MailSync.incremental(account: account)
-                await model.applySync(outcome, account: account)
+            // 冷启动之后，定时是唯一的自动触发点。账号每次现取，分组切换后自动跟上。
+            // 定时这一档不重问标签颜色——那东西几乎不变，留给冷启动和手动刷新。
+            sync.start(accounts: { appState.activeAccounts.map(\.id) }) { account in
+                await MailRefresh.account(account, labels: labelStore, mail: mailStore, colors: false)
+            }
+        }
+        // 侧栏账号行上的刷新按钮
+        .onChange(of: appState.syncRequest) { _, request in
+            guard let request else { return }
+            Task {
+                if let account = request.accountID {
+                    await MailRefresh.account(account, labels: labelStore, mail: mailStore)
+                } else {
+                    await MailRefresh.accounts(appState.activeAccounts.map(\.id),
+                                               labels: labelStore, mail: mailStore)
+                }
             }
         }
         .onChange(of: conversationView) { _, _ in
             // 两种模式的行 id 语义不同（threadId ↔ messageId），旧选择必须清空
             appState.selectedThreads = []
             appState.selectedInfos = []
-        }
-        .onChange(of: appState.lastThreadChange) { _, change in
-            guard let change else { return }
-            // 变更内容已知就本地算，不必回头问服务器
-            if change.isLabelChange {
-                model.applyLocalLabelChange(change.items, add: change.add, remove: change.remove)
-                return
-            }
-            Task {
-                for item in change.items {
-                    await model.refreshRow(account: item.accountID, id: item.threadID)
-                }
-            }
         }
         // 详情栏点「删除」：由列表执行，顺带自动选中下一封
         .onChange(of: appState.trashRequest) { _, request in
@@ -140,9 +165,7 @@ struct ThreadListView: View {
             ForEach(model.summaries) { summary in
                 row(summary)
             }
-            if model.isLoading && !model.summaries.isEmpty {
-                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
-            }
+            backfillFooter
         }
         .listStyle(.inset)
         .onPreferenceChange(RowFramesKey.self) { frames in
@@ -234,11 +257,65 @@ struct ThreadListView: View {
         return "刷新（上次同步 \(f.string(from: at))）"
     }
 
+    /// 当前视图涉及的账号里有没有请求在飞。
+    private var isRefreshing: Bool {
+        selectionAccounts.contains { activity.busyAccounts.contains($0) }
+    }
+
     private var emptyTitle: String {
         switch readFilter {
         case .all: return conversationView ? "没有会话" : "没有邮件"
         case .unread: return "没有未读邮件"
         case .read: return "没有已读邮件"
+        }
+    }
+
+    /// 空列表时说明原因：回溯范围之外的邮件本来就不在本地。
+    private var emptyHint: String {
+        guard readFilter == .all else { return "换个过滤条件看看" }
+        guard let oldest = oldestBackfillDate else { return "这个邮箱在已同步的邮件里一封都没有" }
+        return "已同步 \(Self.dateText(oldest)) 至今的邮件，这个邮箱在这个范围里没有内容。要看更早的，在「设置 → 同步」里调大回溯范围。"
+    }
+
+    /// 列表底部标出回溯到哪儿了——到底就是到底，不再往下自动加载。
+    @ViewBuilder
+    private var backfillFooter: some View {
+        if !model.summaries.isEmpty, let oldest = oldestBackfillDate {
+            HStack {
+                Spacer()
+                Text("已回溯至 \(Self.dateText(oldest))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.vertical, 6)
+            .listRowSeparator(.hidden)
+            .selectionDisabled()
+        }
+    }
+
+    /// 当前视图涉及的账号里，回溯得最浅的那个（多账号聚合时，短板决定了能看到多早）。
+    private var oldestBackfillDate: Date? {
+        selectionAccounts.compactMap { mailStore.oldestDate(account: $0) }.max()
+    }
+
+    private static func dateText(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy年M月d日"
+        return f.string(from: date)
+    }
+
+    /// 垃圾邮件 / 废纸篓：Gmail 的列表接口默认不返回，第一次点进去时单独拉一次。
+    private func ensureSpecialMailbox(_ selection: MailboxSelection) async {
+        guard MailboxQuery.needsExplicitFetch(labelID: selection.labelID) else { return }
+        for account in selectionAccounts {
+            await mailStore.ensureMailbox(account: account, labelID: selection.labelID)
+        }
+    }
+
+    private func refresh() {
+        Task {
+            await MailRefresh.accounts(selectionAccounts, labels: labelStore, mail: mailStore)
         }
     }
 
@@ -285,21 +362,17 @@ struct ThreadListView: View {
         return appState.accounts.first { $0.id == summary.accountID }
     }
 
-    /// 触发重新加载的依据：邮箱选择 + 显示方式 + 过滤。
-    private struct ReloadKey: Hashable {
+    /// 重算列表的依据：邮箱选择 + 参与的账号 + 显示方式 + 过滤。全是本地计算。
+    private struct ViewKey: Hashable {
         let selection: MailboxSelection?
+        let accounts: [String]
         let conversation: Bool
         let filter: String
     }
 
-    private var reloadKey: ReloadKey {
-        ReloadKey(selection: appState.selection, conversation: conversationView, filter: readFilterRaw)
-    }
-
-    private func reload() async {
-        guard let sel = appState.selection else { return }
-        await model.load(accounts: selectionAccounts, labelID: sel.labelID,
-                         conversation: conversationView, filter: readFilter)
+    private var viewKey: ViewKey {
+        ViewKey(selection: appState.selection, accounts: selectionAccounts,
+                conversation: conversationView, filter: readFilterRaw)
     }
 }
 
@@ -329,7 +402,6 @@ private struct ThreadListRow: View {
             // 右滑：标记已读/未读、旗标；左滑：归档、删除（纯图标）
             .swipeActions(edge: .leading, allowsFullSwipe: true) { leadingSwipe }
             .swipeActions(edge: .trailing, allowsFullSwipe: true) { trailingSwipe }
-            .onAppear { rows.loadMoreIfNeeded(after: summary) }
             .opacity(affinity.dimmed ? 0.35 : 1)
             .animation(.easeOut(duration: 0.15), value: affinity.dimmed)
 
