@@ -17,11 +17,21 @@ enum SettingsKey {
     static let backfillLimit = "sync.backfillLimit"
     /// 每个账户最多回溯多少天。
     static let backfillDays = "sync.backfillDays"
+    /// 新邮件通知总开关。
+    static let notifyEnabled = "notify.enabled"
+    /// 只通知「主要」邮件（推广/社交/论坛不弹）。
+    static let notifyMainCategoryOnly = "notify.mainCategoryOnly"
+    /// 通知带提示音。
+    static let notifySound = "notify.sound"
+    /// 在 Dock 图标上显示未读数。
+    static let notifyDockBadge = "notify.dockBadge"
+    /// 被静音的账号（邮箱地址数组）。
+    static let notifyMutedAccounts = "notify.mutedAccounts"
 }
 
 /// 设置窗口的标签页。
 enum SettingsTab: String {
-    case accounts, profiles, display, sync, privacy
+    case accounts, profiles, display, sync, notifications, privacy
 }
 
 /// 设置窗口（⌘,）：账号、分组、显示、隐私四页。
@@ -58,6 +68,10 @@ struct SettingsView: View {
             SyncSettingsPane()
                 .tabItem { Label("同步", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(SettingsTab.sync.rawValue)
+
+            NotificationSettingsPane()
+                .tabItem { Label("通知", systemImage: "bell") }
+                .tag(SettingsTab.notifications.rawValue)
 
             Form {
                 Section {

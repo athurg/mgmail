@@ -14,8 +14,6 @@ struct ThreadListView: View {
     @ObservedObject private var rows = ThreadRowCoordinator.shared
     /// 拖拽状态：只有列表和侧栏订阅它，拖动时不会连累详情栏重绘。
     @ObservedObject private var drag = DragMonitor.shared
-    /// 定时刷新的节奏控制。
-    @StateObject private var sync = SyncScheduler()
     /// 冷启动的第一次刷新还没跑完（此时列表空白该显示转圈而不是「没有邮件」）。
     @State private var isFirstLoad = true
     /// 冷启动那次全账号刷新已经跑过了，后面切分组不该再来一遍。
@@ -90,13 +88,6 @@ struct ThreadListView: View {
                 await MailRefresh.accounts(ids, labels: labelStore, mail: mailStore)
             }
             isFirstLoad = false
-        }
-        .task {
-            // 冷启动之后，定时是唯一的自动触发点。账号每次现取，分组切换后自动跟上。
-            // 定时这一档不重问标签颜色——那东西几乎不变，留给冷启动和手动刷新。
-            sync.start(accounts: { appState.activeAccounts.map(\.id) }) { account in
-                await MailRefresh.account(account, labels: labelStore, mail: mailStore, colors: false)
-            }
         }
         // 侧栏账号行上的刷新按钮
         .onChange(of: appState.syncRequest) { _, request in
