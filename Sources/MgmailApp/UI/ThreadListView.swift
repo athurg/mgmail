@@ -201,6 +201,8 @@ struct ThreadListView: View {
             isDropTarget: rows.dropTargetKey == summary.key,
             isArchivable: isArchivable
         )
+        // 登记这一行的位置：多选叠加卡片要从这儿起飞、飞回这儿来
+        .background(ThreadRowFrameReporter(key: summary.key))
         .tag(summary.key)
         .listRowBackground(dropRowBackground(summary))
     }
