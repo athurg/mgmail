@@ -178,9 +178,17 @@ final class ActivityLog: ObservableObject {
         }
     }
 
-    /// 超出容量时丢掉最老的。进行中的条目在尾部，不会被裁掉。
+    /// 超出容量时丢掉最老的，但只丢已经结束的。
+    ///
+    /// 进行中的条目通常在尾部，可一个慢请求（下载大附件）后面涌进上千条时它就成了最老的那批。
+    /// 被裁掉之后 `finish` 的回填便找不着它，那次请求的结果无声无息地消失在日志里。
     private func trim() {
         guard entries.count > Self.capacity else { return }
-        entries.removeFirst(entries.count - Self.capacity)
+        var remaining = entries.count - Self.capacity
+        entries.removeAll { entry in
+            guard remaining > 0, !entry.isRunning else { return false }
+            remaining -= 1
+            return true
+        }
     }
 }

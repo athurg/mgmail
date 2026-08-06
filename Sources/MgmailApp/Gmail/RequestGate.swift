@@ -21,14 +21,19 @@ actor RequestGate {
             running += 1
             return
         }
+        // 排队。名额由 release 直接交到手上，恢复之后不再自增——
+        // 否则「先减后加」中间那一瞬 running 是虚低的，新来的请求会趁机挤进来，
+        // 在飞的数量就压不住 limit 了。
         await withCheckedContinuation { waiters.append($0) }
-        running += 1
     }
 
     func release() {
+        // 有人在等就把名额直接转交，running 保持不变
+        guard waiters.isEmpty else {
+            waiters.removeFirst().resume()
+            return
+        }
         running -= 1
-        guard !waiters.isEmpty else { return }
-        waiters.removeFirst().resume()
     }
 }
 

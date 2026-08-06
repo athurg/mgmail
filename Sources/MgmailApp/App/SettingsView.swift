@@ -146,8 +146,6 @@ struct SyncSettingsPane: View {
 
     private func rangeText(_ account: String) -> String {
         guard let oldest = mailStore.oldestDate(account: account) else { return "尚未同步" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy年M月d日"
-        return formatter.string(from: oldest)
+        return DateText.fullDate(oldest)
     }
 }

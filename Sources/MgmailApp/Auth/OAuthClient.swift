@@ -75,8 +75,8 @@ struct OAuthClient {
             throw OAuthError.loopbackFailed("无法构造授权 URL")
         }
 
-        // 打开系统浏览器（在主线程）
-        await MainActor.run { NSWorkspace.shared.open(authURL) }
+        // 打开系统浏览器（在主线程）。打不开也照常等回调——用户可以自己把地址贴过去。
+        await MainActor.run { _ = NSWorkspace.shared.open(authURL) }
 
         // 等待回调
         let params = try await server.waitForCallback()

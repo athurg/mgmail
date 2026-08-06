@@ -160,11 +160,36 @@ enum MimeBuilder {
         "\(name): \(value)" + CRLF
     }
 
-    /// RFC 2047：整段编成一个 base64 词。纯 ASCII 就原样返回，免得平白变难读。
+    /// RFC 2047 编码。纯 ASCII 就原样返回，免得平白变难读。
+    ///
+    /// 单个 encoded-word 规范上不得超过 75 个字符，长中文主题一个词根本装不下，
+    /// 所以要切成若干个用空格连起来（收信端会把相邻的几个拼回去）。
+    /// 切的时候必须按**字符**切、不能按字节切：一个汉字的 UTF-8 三个字节要是被劈开，
+    /// 解出来就是乱码。
     static func encodeHeaderText(_ text: String) -> String {
         guard text.contains(where: { !$0.isASCII }) else { return text }
-        let encoded = Data(text.utf8).base64EncodedString()
-        return "=?UTF-8?B?\(encoded)?="
+        // "=?UTF-8?B?" + "?=" 占 12 字符，留给 base64 的就剩 63；
+        // base64 每 4 字符编 3 字节，取 45 字节一段（编出来正好 60 字符）。
+        let maxBytesPerWord = 45
+        var words: [String] = []
+        var chunk = Data()
+        for character in text {
+            let bytes = Data(String(character).utf8)
+            if chunk.count + bytes.count > maxBytesPerWord, !chunk.isEmpty {
+                words.append(encodedWord(chunk))
+                chunk = Data()
+            }
+            chunk.append(bytes)
+        }
+        if !chunk.isEmpty { words.append(encodedWord(chunk)) }
+        // 用「换行 + 空格」接起来（RFC 2822 的 folding）：几十个汉字的主题连成一行
+        // 会超过 998 字符的行长上限。相邻 encoded-word 之间的空白按 RFC 2047 会被
+        // 收信端丢掉，所以折行不会在解出来的文字里多出空格。
+        return words.joined(separator: CRLF + " ")
+    }
+
+    private static func encodedWord(_ data: Data) -> String {
+        "=?UTF-8?B?\(data.base64EncodedString())?="
     }
 
     private static func base64Body(_ text: String) -> String {
