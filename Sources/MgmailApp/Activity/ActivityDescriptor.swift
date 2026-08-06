@@ -43,8 +43,15 @@ struct ActivityDescriptor: Sendable {
             default: return .init(kind: .label, title: "读取标签详情")
             }
 
+        case "drafts":
+            return .init(kind: .send, title: "保存草稿")
+
         case "threads", "messages":
             let isThread = segments.first == "threads"
+            // /messages/send 没有 id 段，得在按 id 分派之前先认出来
+            if segments.count == 2, segments[1] == "send" {
+                return .init(kind: .send, title: "发送邮件")
+            }
             if segments.count == 1 {
                 let scope = value("labelIds").map { "（\(mailboxName($0))）" } ?? ""
                 return .init(kind: .list, title: (isThread ? "获取会话列表" : "获取邮件列表") + scope)

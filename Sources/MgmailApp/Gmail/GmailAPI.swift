@@ -160,6 +160,39 @@ struct GmailAPI {
         return try decode(HistoryListResponse.self, data)
     }
 
+    // MARK: - 发信
+
+    /// 发送一封已拼好的 RFC 2822 报文。
+    ///
+    /// `threadID` 给了这封才会落进原会话（回复时必须带，否则 Gmail 另起一串）。
+    /// 走 JSON 简单上传，Gmail 对这条路的报文上限是 5MB——附件大小在
+    /// 撰写界面就拦掉了，这里不再判断。
+    @discardableResult
+    func sendMessage(raw: Data, threadID: String? = nil) async throws -> GmailMessage {
+        let body = try JSONEncoder().encode(RawMessageRequest(raw: base64URL(raw), threadId: threadID))
+        let data = try await send(path: "/messages/send", method: "POST", body: body)
+        return try decode(GmailMessage.self, data)
+    }
+
+    /// 存草稿。Gmail 的草稿也是一封完整报文，只是没发出去。
+    @discardableResult
+    func createDraft(raw: Data, threadID: String? = nil) async throws -> GmailDraft {
+        struct Body: Encodable { let message: RawMessageRequest }
+        let body = try JSONEncoder().encode(
+            Body(message: RawMessageRequest(raw: base64URL(raw), threadId: threadID))
+        )
+        let data = try await send(path: "/drafts", method: "POST", body: body)
+        return try decode(GmailDraft.self, data)
+    }
+
+    /// Gmail 的 raw 字段要 base64url（无填充）。
+    private func base64URL(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
     // MARK: - 附件
 
     func getAttachment(messageID: String, attachmentId: String) async throws -> Data {
