@@ -148,8 +148,8 @@ struct ThreadListView: View {
             }
         )
         return List(selection: selection) {
-            ForEach(model.summaries) { summary in
-                row(summary)
+            ForEach(rowItems) { item in
+                row(item.summary)
             }
             backfillFooter
         }
@@ -180,6 +180,26 @@ struct ThreadListView: View {
     }
 
     // MARK: - 单行（含拖出邮件 / 拖入标签）
+
+    /// 列表行的身份：会话 key 再加上「这行有没有标签 chip」。
+    ///
+    /// macOS 的 List 底下是 NSTableView，行高按行身份缓存：身份不变时只换内容，
+    /// 高度沿用旧值 —— 给一封原本没标签的邮件打上标签，chip 那一行就会被行的下边缘裁掉。
+    /// 身份只在「有 chip / 没 chip」之间翻转，正对应唯一一次真实的高度变化；
+    /// 已读、旗标这些不改高度的变化不参与，免得白白重建整行。
+    private struct RowItem: Identifiable {
+        let summary: ThreadSummary
+        let hasChips: Bool
+        var id: String { "\(summary.accountID)\t\(summary.id)\t\(hasChips ? 1 : 0)" }
+    }
+
+    private var rowItems: [RowItem] {
+        let map = rows.labelMap
+        return model.summaries.map { summary in
+            RowItem(summary: summary,
+                    hasChips: summary.labelIds.contains { map["\(summary.accountID)\t\($0)"] != nil })
+        }
+    }
 
     private func row(_ summary: ThreadSummary) -> some View {
         // 传给行的必须全是可比较的值加一个稳定的引用；一旦混进闭包，
