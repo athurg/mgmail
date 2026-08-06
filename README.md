@@ -49,19 +49,29 @@ Scripts/build_app.sh debug run # debug 编译并启动
   撑大三分之一，所以留出余量；超了在附件栏直接标出来。大附件要走 resumable upload。
 - **权限**：`gmail.modify` 已含发送权限，不必额外申请 scope。
 
-报文拼装（`Compose/MimeBuilder.swift`）配了一套自检：
+## 自检
+
+两套自检，都是纯 Foundation、独立编译即可运行：
 
 ```bash
-Scripts/check_mime.sh
+Scripts/check_mime.sh      # 报文拼装
+Scripts/check_mailbox.sh   # 邮箱归属判断
 ```
 
-盯的是那些**本地看不出、收件人才看得出**的地方——中文主题的 RFC 2047 编码、
-`"Doe, John" <j@d.com>` 里的逗号不被拆成两个收件人、`text/html` 必须排在
-`text/plain` 之后、`References` 链不重复追加、中文附件名的 RFC 2231、
-行尾一律 CRLF 没有裸 LF。拼错了不会当场报错，是对方收到乱码时才发现。
+盯的都是那些**本地看着没错、事后才发现不对**的地方。
 
-> 它不是 `swift test`。本项目按设计不依赖完整 Xcode，因而没有 XCTest 也没有
-> swift-testing 可用；这个脚本用 `swiftc` 把检查文件连同被检查的几个源文件编出来跑，
+`check_mime.sh`（`Compose/MimeBuilder.swift`）——中文主题的 RFC 2047 编码、
+长主题切成多个 encoded-word 且不切断汉字、`"Doe, John" <j@d.com>` 里的逗号不被拆成
+两个收件人、`text/html` 必须排在 `text/plain` 之后、`References` 链不重复追加、
+中文附件名的 RFC 2231、行尾一律 CRLF 没有裸 LF。拼错了不会当场报错，
+是对方收到乱码时才发现。
+
+`check_mailbox.sh`（`Gmail/Mailbox.swift`）——各个邮箱收哪些信。要害在于删除和
+标记垃圾在 Gmail 里只是加个标签，`SENT`、`STARRED`、用户标签一个都不会掉：
+不把它们排除掉，删过的已发送邮件就会一直赖在「已发送」里，和 Gmail 网页版对不上。
+
+> 它们不是 `swift test`。本项目按设计不依赖完整 Xcode，因而没有 XCTest 也没有
+> swift-testing 可用；这两个脚本用 `swiftc` 把检查文件连同被检查的几个源文件编出来跑，
 > 是真跑断言，只是没有测试框架的报告格式。日后装了 Xcode 可以改回 XCTest。
 
 ## 数据与刷新
@@ -140,14 +150,45 @@ HTTPS 端点或 Pub/Sub pull 订阅，桌面应用两样都没有，用户得自
 ```
 Sources/MgmailApp/
   App/      应用入口与根状态
-  Auth/     OAuth（PKCE / 回环服务器 / 令牌刷新 / Keychain）
+  Auth/     OAuth（PKCE / 回环服务器 / 令牌刷新 / 令牌存储）
   Gmail/    REST 客户端 / 账户邮件池 / 增量同步 / 数据模型 / MIME 解析
+  Cache/    磁盘缓存、存储键、一次性布局迁移与回收
   Compose/  写邮件（报文拼装 / 撰写状态 / 引用原文）
   Accounts/ 账户模型与持久化
   Activity/ 网络活动日志（记录中枢 / 描述推断 / 磁盘日志）
   Notify/   新邮件通知（该不该弹 / 合并投递 / 授权状态 / 点击落点 / 设置页）
   UI/       三栏界面、会话列表、正文渲染、撰写窗口、标签编辑、活动栏与活动窗口
 Scripts/
-  build_app.sh   编译并打包 dist/Mgmail.app
-  check_mime.sh  报文拼装自检（见「写邮件」）
+  build_app.sh      编译并打包 dist/Mgmail.app（版本号取自最近的 git tag）
+  check_mime.sh     报文拼装自检（见「自检」）
+  check_mailbox.sh  邮箱归属自检（见「自检」）
 ```
+
+## 本地数据
+
+都在 `~/Library/Application Support/Mgmail/` 下：
+
+```
+oauth_client.json          Google OAuth 客户端配置（自己放进去的）
+tokens/<账号>.token        refresh token，权限 0600
+avatars/<账号>.png         账号头像
+Cache/<账号>/
+  pool/     该账户的邮件池（列表数据的唯一来源）
+  labels/   标签定义
+  sync/     增量同步位点
+  thread/   会话正文（不可变，拉一次就一直留着）
+  message/  单封正文
+  inline/   正文里的内联图片
+Logs/                      网络活动日志，保留 7 天
+```
+
+账号目录名是「邮箱去掉符号 + 地址摘要」，缀摘要是为了让 `a.b@x.com` 和
+`a_b@x.com` 不会落到同一个路径上。旧布局在启动时由 `Cache/StorageMigration.swift`
+一次性搬过去，那是模块化的一次性代码，不在日常读写路径上。
+
+`thread/`、`message/`、`inline/` 会按「最后一次打开」回收（超过 200MB 或 120 天没碰过）。
+`pool/`、`labels/`、`sync/` 不参与回收——那是同步位点和列表本身，丢了要重新全量拉。
+
+> `tokens/` 里是**长期有效**的 refresh token，明文存放，靠文件权限保护。
+> 这是相对钥匙串的一次明确降级（换来的是不再反复弹授权框），细节见 `Auth/TokenStore.swift`
+> 的注释。拿到这个文件就等于拿到你的 Gmail 读写权限，别让它离开这台机器。

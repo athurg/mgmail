@@ -1,7 +1,7 @@
 import Foundation
 
-/// 账户元数据的持久化（邮箱 + 显示名）存 UserDefaults；
-/// 敏感的 refresh token 存 Keychain（见 TokenStore）。
+/// 账户元数据的持久化（邮箱 + 显示名 + 备注 + 头像 URL）存 UserDefaults；
+/// 敏感的 refresh token 单独存受权限保护的文件，见 `TokenStore`。
 enum AccountStore {
     private static let key = "accounts.v1"
 

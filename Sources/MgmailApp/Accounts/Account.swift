@@ -12,9 +12,12 @@ struct Account: Identifiable, Hashable {
     var avatarURL: String?
 
     /// 侧栏头像颜色（由 email 稳定推导）。
+    ///
+    /// 用 `StableHash` 而不是 `hashValue`：后者带每次启动都变的随机种子，
+    /// 同一个账号的头像会一次一个颜色。
     var avatarColor: Color {
-        let hue = Double(abs(email.hashValue) % 360) / 360.0
-        return Color(hue: hue, saturation: 0.55, brightness: 0.85)
+        Color(hue: Double(StableHash.index(email, upperBound: 360)) / 360.0,
+              saturation: 0.55, brightness: 0.85)
     }
 
     /// 头像里显示的首字母。

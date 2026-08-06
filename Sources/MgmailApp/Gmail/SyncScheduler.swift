@@ -74,13 +74,11 @@ final class SyncScheduler: ObservableObject {
         }
     }
 
-    /// 立即同步一次（定时、睡眠唤醒、工具栏刷新、侧栏账号刷新都走这里）。
-    ///
-    /// `only` 非空时只同步该账号（侧栏是按账号刷新的）。即便它不在当前列表里也照样跑：
-    /// 同步会推进该账号的 history 位点，下次它出现在列表里时就不用从头补。
-    func syncNow(only: String? = nil) async {
+    /// 立即同步一次。只有定时器和睡眠唤醒会调它——手动刷新走的是侧栏账号行上的按钮，
+    /// 那条路直接调 `MailRefresh`，不经过调度器，因此不会被这里的互斥挡住。
+    func syncNow() async {
         guard !isSyncing else { return }
-        let accounts = only.map { [$0] } ?? (self.accounts?() ?? [])
+        let accounts = self.accounts?() ?? []
         guard !accounts.isEmpty else { return }
         isSyncing = true
         defer {

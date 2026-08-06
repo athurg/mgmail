@@ -49,34 +49,44 @@ struct MailCategory: Identifiable, Hashable {
 /// 把选中的邮箱标识解析成「拉取时传什么参数」与「本地怎么判断一封邮件属于它」。
 ///
 /// 后者是重构后的关键：邮件都在账户级的池子里，各个邮箱视图不过是对同一份数据的不同过滤。
+/// 刻意不引用 `PooledMessage`：判断只看标签集合，这样这段逻辑不依赖任何
+/// 界面或存储类型，可以被 `Scripts/check_mailbox.sh` 单独编出来跑。
+/// 对邮件本身的重载在 `MailStore` 那边。
 struct MailboxQuery {
     let apiLabelID: String?
     let includeSpamTrash: Bool
     /// 仅凭标签集合判断是否属于该邮箱。
     let labelsBelong: ([String]) -> Bool
 
-    func belongs(_ message: PooledMessage) -> Bool {
-        labelsBelong(message.labelIds)
-    }
-
     static func resolve(labelID: String) -> MailboxQuery {
         if let box = StandardMailbox.all.first(where: { $0.id == labelID }) {
             if box.id == StandardMailbox.allMailID {
-                // 所有邮件：不按标签过滤，且排除垃圾/废纸篓
+                // 所有邮件：不按标签过滤，只把垃圾/废纸篓摘出去
                 return MailboxQuery(apiLabelID: nil, includeSpamTrash: false) { labels in
-                    !labels.contains("TRASH") && !labels.contains("SPAM")
+                    !isDiscarded(labels)
                 }
             }
             let apiID = box.apiLabelID
             return MailboxQuery(apiLabelID: apiID, includeSpamTrash: box.includeSpamTrash) { labels in
                 guard let apiID else { return true }
-                return labels.contains(apiID)
+                guard labels.contains(apiID) else { return false }
+                // 废纸篓/垃圾邮件这两个邮箱自己就是终点，不再自我排除
+                return box.includeSpamTrash || !isDiscarded(labels)
             }
         }
         // 用户自定义标签，以及收件箱分类（CATEGORY_*）
         return MailboxQuery(apiLabelID: labelID, includeSpamTrash: false) { labels in
-            labels.contains(labelID)
+            labels.contains(labelID) && !isDiscarded(labels)
         }
+    }
+
+    /// 这封信是不是已经被丢掉了。
+    ///
+    /// 删除和标记垃圾在 Gmail 里都只是加个标签，原有的 SENT、STARRED、用户标签
+    /// 一个不少地留着。不排除的话，删掉的已发送邮件仍然挂在「已发送」里，
+    /// 星标过的垃圾邮件仍然挂在「已加星标」里——和 Gmail 网页版对不上。
+    private static func isDiscarded(_ labels: [String]) -> Bool {
+        labels.contains("TRASH") || labels.contains("SPAM")
     }
 
     /// 除垃圾邮件与废纸篓外，其余邮箱的邮件都在账户级列表的返回范围内。

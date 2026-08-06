@@ -2,10 +2,15 @@ import Foundation
 
 /// 保存每个账户的 refresh token（纯文件读写）。
 ///
-/// 存储位置：`~/Library/Application Support/Mgmail/tokens/<邮箱>.token`，权限 0600（仅本用户可读）。
-/// 说明：本机（macOS 26）钥匙串 ACL 不被可靠遵守——即使设为“所有应用可读”仍反复弹授权，
-/// 故改用受权限保护的本地文件（安全性等同用户已接受的“所有应用可读”，且永不弹窗）。
-/// 旧钥匙串条目的一次性迁移见独立模块 `TokenMigration`。
+/// 存储位置：`~/Library/Application Support/Mgmail/tokens/<邮箱-摘要>.token`，
+/// 权限 0600、目录 0700（仅本用户可读）。
+///
+/// 为什么不用钥匙串：本机（macOS 26）钥匙串 ACL 不被可靠遵守——即使设为
+/// “所有应用可读”仍反复弹授权，开发期每次重编译都要点一遍。
+///
+/// **这是一次明确的安全降级，不是等价替换**：钥匙串项即便放宽了 ACL，取用时
+/// 仍受进程签名门控；而普通文件不受任何门控，凡是以当前用户身份运行的程序
+/// 都能直接读走这份长期凭据。换来的是不弹窗。要收紧就换回钥匙串。
 enum TokenStore {
     static func saveRefreshToken(_ token: String, for email: String) {
         let url = fileURL(for: email)
@@ -26,20 +31,14 @@ enum TokenStore {
     // MARK: - 文件位置
 
     static func fileURL(for email: String) -> URL {
-        tokensDir().appendingPathComponent(sanitize(email) + ".token")
+        tokensDirectory.appendingPathComponent(StorageKey.account(email) + ".token")
     }
 
-    private static func tokensDir() -> URL {
+    /// 令牌目录。一次性迁移要按旧名字找文件，所以不能藏起来。
+    static var tokensDirectory: URL {
         let dir = GoogleConfig.supportDirectory.appendingPathComponent("tokens", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
         return dir
-    }
-
-    private static func sanitize(_ s: String) -> String {
-        let allowed = CharacterSet.alphanumerics
-        let scalars = s.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-        let result = String(scalars)
-        return result.isEmpty ? "_" : result
     }
 }

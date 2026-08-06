@@ -13,6 +13,10 @@ final class ComposeModel: ObservableObject {
     @Published var errorText: String?
     /// 发送成功后置位，窗口据此自动关闭。
     @Published var didSend = false
+    /// 转发的原件附件还在取回中（附件条上显示进度，发送按钮暂时压住）。
+    @Published private(set) var isFetchingAttachments = false
+    /// 附件相关的提示（哪几个没取回来）。就近显示在附件条上，不弹窗打断撰写。
+    @Published var attachmentNotice: String?
 
     let kind: ComposeKind
 
@@ -21,7 +25,40 @@ final class ComposeModel: ObservableObject {
         self.mail = seed.mail
     }
 
-    var canSend: Bool { mail.canSend && !isBusy }
+    /// 附件还没取全就发出去，等于转发了一封缺附件的信，所以要等。
+    var canSend: Bool { mail.canSend && !isBusy && !isFetchingAttachments }
+
+    // MARK: - 转发：取回原件附件
+
+    /// 把 `pendingAttachments` 逐个下载成真正的附件。窗口出现后调一次。
+    ///
+    /// 一个失败不牵连其余：能带走几个是几个，缺哪个明说，由用户决定要不要照发。
+    func loadPendingAttachments() async {
+        let pending = mail.pendingAttachments
+        guard !pending.isEmpty, let account = mail.attachmentSourceAccount else { return }
+        // 清空在前：窗口重建时不会重复取一遍
+        mail.pendingAttachments = []
+        isFetchingAttachments = true
+        defer { isFetchingAttachments = false }
+
+        let api = GmailAPI(account: account)
+        var failed: [String] = []
+        for item in pending {
+            do {
+                let data = try await api.getAttachment(messageID: item.messageID,
+                                                       attachmentId: item.attachmentId)
+                mail.attachments.append(OutgoingAttachment(filename: item.filename,
+                                                           mimeType: item.mimeType,
+                                                           data: data))
+            } catch {
+                failed.append(item.filename)
+            }
+        }
+        if !failed.isEmpty {
+            attachmentNotice = "有 \(failed.count) 个附件没取回来（\(failed.joined(separator: "、"))），"
+                + "可手动添加后再发"
+        }
+    }
 
     var isOverAttachmentLimit: Bool { mail.attachmentsSize > Self.attachmentLimit }
 

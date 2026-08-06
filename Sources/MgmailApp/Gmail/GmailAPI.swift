@@ -59,27 +59,19 @@ struct GmailAPI {
         _ = try await send(path: "/labels/\(id)", method: "DELETE")
     }
 
-    // MARK: - 会话列表
+    // MARK: - 邮件列表
 
-    func listThreads(labelId: String?, query: String?, pageToken: String?,
-                     maxResults: Int = 40, includeSpamTrash: Bool = false) async throws -> ThreadListResponse {
-        var items: [URLQueryItem] = [.init(name: "maxResults", value: String(maxResults))]
-        if let labelId { items.append(.init(name: "labelIds", value: labelId)) }
-        if let query, !query.isEmpty { items.append(.init(name: "q", value: query)) }
-        if let pageToken { items.append(.init(name: "pageToken", value: pageToken)) }
-        // 按 SPAM/TRASH 过滤、或想包含它们时必须显式开启，否则 Gmail 返回空
-        if includeSpamTrash { items.append(.init(name: "includeSpamTrash", value: "true")) }
-        let data = try await send(path: "/threads", query: items)
-        return try decode(ThreadListResponse.self, data)
-    }
-
-    /// 邮件列表（不按会话显示时用；每条结果是一封独立邮件）。
+    /// 拉一页邮件 id。
+    ///
+    /// 只有这一个列表接口，没有对应的 `threads.list`：邮件按账户整批进本地池子后，
+    /// 「按会话合并」是在本地对同一份数据分组算出来的，不必再向服务器要一遍。
     func listMessages(labelId: String?, query: String?, pageToken: String?,
                       maxResults: Int = 40, includeSpamTrash: Bool = false) async throws -> MessageListResponse {
         var items: [URLQueryItem] = [.init(name: "maxResults", value: String(maxResults))]
         if let labelId { items.append(.init(name: "labelIds", value: labelId)) }
         if let query, !query.isEmpty { items.append(.init(name: "q", value: query)) }
         if let pageToken { items.append(.init(name: "pageToken", value: pageToken)) }
+        // 按 SPAM/TRASH 过滤、或想包含它们时必须显式开启，否则 Gmail 返回空
         if includeSpamTrash { items.append(.init(name: "includeSpamTrash", value: "true")) }
         let data = try await send(path: "/messages", query: items)
         return try decode(MessageListResponse.self, data)
@@ -105,11 +97,6 @@ struct GmailAPI {
     /// 把会话移入废纸篓（Gmail 的“删除”语义；30 天后自动清除，可从废纸篓恢复）。
     func trashThread(id: String) async throws {
         _ = try await send(path: "/threads/\(id)/trash", method: "POST")
-    }
-
-    /// 从废纸篓恢复会话。
-    func untrashThread(id: String) async throws {
-        _ = try await send(path: "/threads/\(id)/untrash", method: "POST")
     }
 
     /// 把单封邮件移入废纸篓（不按会话显示时用）。
@@ -281,7 +268,6 @@ struct GmailAPI {
     }
 
     private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
-        if data.isEmpty, let empty = EmptyDecodable() as? T { return empty }
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
@@ -289,6 +275,3 @@ struct GmailAPI {
         }
     }
 }
-
-/// 用于 DELETE 等空响应。
-private struct EmptyDecodable: Decodable {}

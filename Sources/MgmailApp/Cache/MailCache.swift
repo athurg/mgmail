@@ -68,6 +68,7 @@ actor MailCache {
         let url = accountDir(account).appendingPathComponent("inline", isDirectory: true)
             .appendingPathComponent(inlineFileName(key))
         guard let data = try? Data(contentsOf: url) else { return nil }
+        touch(url)
         return String(data: data, encoding: .utf8)
     }
 
@@ -90,38 +91,85 @@ actor MailCache {
         try? FileManager.default.removeItem(at: accountDir(account))
     }
 
+    /// 正文缓存的回收上限。
+    ///
+    /// 池子（`pool`/`labels`/`sync`）不参与回收：那是同步位点和列表本身，丢了要重新全量拉。
+    /// 会回收的是正文与内联图——它们只是「省一次请求」，删掉最多是下次打开慢一点。
+    static let bodyCacheLimit = 200 * 1024 * 1024
+    /// 多久没打开过就可以丢。
+    static let bodyCacheMaxAge: TimeInterval = 120 * 24 * 3600
+
+    /// 按「最后一次用到」回收正文缓存：先丢太久没碰的，还超量就从最旧的接着丢。
+    ///
+    /// 这份缓存原本只增不减——正文是不可变的，所以一封信只拉一次、存下来就一直留着，
+    /// 唯一的清理时机是删账号。日积月累下来它会安静地涨到几百 MB，
+    /// 而其中绝大多数是再也不会打开第二次的旧邮件。
+    func reclaim() {
+        let fm = FileManager.default
+        guard let accounts = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+
+        var files: [(url: URL, size: Int, used: Date)] = []
+        for account in accounts {
+            for kind in ["thread", "message", "inline"] {
+                let dir = account.appendingPathComponent(kind, isDirectory: true)
+                let found = (try? fm.contentsOfDirectory(
+                    at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])) ?? []
+                for url in found {
+                    let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                    files.append((url,
+                                  values?.fileSize ?? 0,
+                                  values?.contentModificationDate ?? .distantPast))
+                }
+            }
+        }
+
+        // 老的排在前面，先出局
+        files.sort { $0.used < $1.used }
+        var total = files.reduce(0) { $0 + $1.size }
+        let cutoff = Date().addingTimeInterval(-Self.bodyCacheMaxAge)
+
+        for file in files {
+            let tooOld = file.used < cutoff
+            let overLimit = total > Self.bodyCacheLimit
+            guard tooOld || overLimit else { break }   // 排过序，后面的只会更新更小
+            try? fm.removeItem(at: file.url)
+            total -= file.size
+        }
+    }
+
     // MARK: - 底层文件读写
 
     private func load<T: Decodable>(_ type: T.Type, account: String, kind: String, key: String) -> T? {
         let url = fileURL(account: account, kind: kind, key: key)
         guard let data = try? Data(contentsOf: url) else { return nil }
+        touch(url)
         return try? decoder.decode(T.self, from: data)
     }
 
     private func save<T: Encodable>(_ value: T, account: String, kind: String, key: String) {
         let dir = accountDir(account).appendingPathComponent(kind, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent(sanitize(key) + ".json")
+        let url = dir.appendingPathComponent(StorageKey.sanitize(key) + ".json")
         if let data = try? encoder.encode(value) {
             try? data.write(to: url, options: .atomic)
         }
     }
 
+    /// 把文件的修改时间推到此刻，好让回收时能按「最后一次用到」排序。
+    ///
+    /// 读取本身不改 mtime，不 touch 的话一封天天在看的邮件和一封再没打开过的，
+    /// 在回收器眼里一样老。
+    private func touch(_ url: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
+
     private func accountDir(_ account: String) -> URL {
-        root.appendingPathComponent(sanitize(account), isDirectory: true)
+        root.appendingPathComponent(StorageKey.account(account), isDirectory: true)
     }
 
     private func fileURL(account: String, kind: String, key: String) -> URL {
         accountDir(account)
             .appendingPathComponent(kind, isDirectory: true)
-            .appendingPathComponent(sanitize(key) + ".json")
-    }
-
-    /// 把任意字符串转成安全的文件名（保留字母数字，其余换成下划线）。
-    private func sanitize(_ s: String) -> String {
-        let allowed = CharacterSet.alphanumerics
-        let scalars = s.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" }
-        let result = String(scalars)
-        return result.isEmpty ? "_" : result
+            .appendingPathComponent(StorageKey.sanitize(key) + ".json")
     }
 }

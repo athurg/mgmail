@@ -8,8 +8,7 @@ extension GmailLabel {
 
     /// 返回替换了颜色的副本。
     func withColor(_ color: LabelColor) -> GmailLabel {
-        GmailLabel(id: id, name: name, type: type,
-                   messagesUnread: messagesUnread, messagesTotal: messagesTotal, color: color)
+        GmailLabel(id: id, name: name, type: type, color: color)
     }
 }
 

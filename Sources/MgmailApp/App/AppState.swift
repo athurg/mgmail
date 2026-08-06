@@ -102,8 +102,11 @@ final class AppState: ObservableObject {
         let savedID = ProfileStore.loadCurrentID()
         currentProfileID = profiles.contains { $0.id == savedID } ? savedID : nil
         hasOAuthConfig = GoogleConfig.load() != nil
-        // 一次性迁移旧钥匙串 token 到文件存储（迁移完成后可移除本行与 TokenMigration.swift）
-        TokenMigration.migrateFromKeychain(emails: accounts.map(\.email))
+        // 磁盘布局的一次性迁移与陈旧文件清理。必须同步跑在任何缓存读写之前，
+        // 否则会照着旧路径读出空结果、再照新路径写一份，等于把数据劈成两半。
+        StorageMigration.run(accounts: accounts.map(\.email))
+        // 正文缓存的回收。纯磁盘操作，放后台，不挡启动。
+        Task { await MailCache.shared.reclaim() }
         selectDefaultInboxIfNeeded()
     }
 
