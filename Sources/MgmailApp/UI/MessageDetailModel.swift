@@ -108,7 +108,6 @@ final class MessageDetailModel: ObservableObject {
 
     /// 从服务器取正文，解析内联图片后写进缓存。一次请求拿完。
     private func fetch(account: String, threadID: String) async {
-        FileHandle.standardError.write(Data("VERIFY-FETCH \(threadID)\n".utf8))
         isLoading = true
         defer { isLoading = false }
         do {
