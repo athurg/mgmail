@@ -113,7 +113,10 @@ if security find-identity -p codesigning 2>/dev/null | grep -q "\"$SIGN_IDENTITY
   echo "==> 用「${SIGN_IDENTITY}」签名"
   codesign --force --sign "$SIGN_IDENTITY" --identifier "$BUNDLE_ID" "$APP_DIR"
 else
-  echo "==> 跳过签名：未找到证书「${SIGN_IDENTITY}」（app 将保持未签名，Keychain 每次重编译会重弹授权）"
+  echo "==> 警告：未找到证书「${SIGN_IDENTITY}」，app 保持未签名。后果有两个："
+  echo "    1) Keychain 每次重编译会重弹授权；"
+  echo "    2) 新邮件通知很可能收不到——未签名的 bundle 拿不到稳定的通知身份。"
+  echo "    生成证书：钥匙串访问 → 证书助理 → 创建证书（类型：代码签名，自签名根）。"
 fi
 
 echo "==> 完成: $APP_DIR"

@@ -2,10 +2,16 @@ import SwiftUI
 
 @main
 struct MgmailApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
     @StateObject private var labelStore = LabelStore()
     /// 全应用唯一的邮件数据源（按账户组织，各邮箱视图都是它的过滤结果）。
     @StateObject private var mailStore = MailStore()
+    /// 后台同步的节奏控制。
+    ///
+    /// 挂在 App 上而不是列表视图上：macOS 关掉最后一个窗口进程并不退出，
+    /// 定时器若跟着视图一起没了，新邮件通知也就跟着没了。
+    @StateObject private var sync = SyncScheduler()
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +19,7 @@ struct MgmailApp: App {
                 .environmentObject(appState)
                 .environmentObject(labelStore)
                 .environmentObject(mailStore)
+                .environmentObject(sync)
                 .frame(minWidth: 900, minHeight: 560)
                 // 提前把 WebKit 渲染进程拉起来，第一封邮件的正文不用等它冷启动
                 .task { MessageBodyLayout.warmUp() }
@@ -54,6 +61,17 @@ struct MgmailApp: App {
     }
 }
 
+/// 应用级的生命周期钩子。
+///
+/// 目前只做一件事：尽早挂上通知中心的代理。这必须在应用启动的最初阶段完成——
+/// 从通知点进来的冷启动，系统会在启动后立刻把「点了哪条」交给代理，
+/// 那时候还没有任何视图，晚一步就丢了。
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationRouter.shared.install()
+    }
+}
+
 /// 「文件 → 新邮件」（⌘N）。
 ///
 /// 发件人取当前侧栏选中的那个账号，没选中就用第一个；一个账号都没有时按钮置灰
@@ -78,6 +96,12 @@ struct NewMailCommand: Commands {
 /// 三栏根视图（仿 Apple Mail）。阶段 1 先搭空壳，后续阶段填充真实内容。
 struct RootView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var labelStore: LabelStore
+    @EnvironmentObject private var mailStore: MailStore
+    @EnvironmentObject private var sync: SyncScheduler
+    @ObservedObject private var router = NotificationRouter.shared
+    /// 行 id 的语义随它变（会话模式下是 threadId，否则是 messageId），跳转要按它来。
+    @AppStorage(SettingsKey.conversationView) private var conversationView = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -109,6 +133,47 @@ struct RootView: View {
             Button("好", role: .cancel) { appState.errorMessage = nil }
         } message: {
             Text(appState.errorMessage ?? "")
+        }
+        .task {
+            // 定时同步覆盖**全部**账号（不只当前分组），否则分组外的来信永远发现不了，
+            // 也就永远不会通知。代价是它们的池子也得先从磁盘恢复：池子里存着拉取游标，
+            // 不恢复就等于游标丢失，定时器会把那个账号当新账号从头全量拉一遍。
+            await mailStore.restore(accounts: appState.accounts.map(\.id))
+            // 调度器本身活在 App 上，这里只是把「同步什么」告诉它。
+            // 视图重建时再调一次是幂等的，旧定时器会被换掉。
+            NewMailNotifier.shared.accountName = { [weak appState] email in
+                appState?.accounts.first { $0.id == email }?.displayName ?? email
+            }
+            sync.start(accounts: { appState.accounts.map(\.id) }) { account in
+                await MailRefresh.account(account, labels: labelStore, mail: mailStore, colors: false)
+            }
+            // 没有账号就没有邮件，这时候索要通知权限只是打扰
+            if !appState.accounts.isEmpty {
+                await NotificationPermission.shared.requestIfNeeded()
+            }
+        }
+        // 点了通知：主窗口可能刚被重新打开，落点在这里执行
+        .onChange(of: router.pending, initial: true) { _, route in
+            guard let route else { return }
+            open(route)
+            router.pending = nil
+        }
+    }
+
+    /// 跳到通知里那封邮件。
+    ///
+    /// 邮件可能属于当前分组之外的账号——那种情况下先回到「全部」，
+    /// 否则跳过去了也看不见，用户只会觉得点了没反应。
+    private func open(_ route: NotificationRoute) {
+        if !appState.activeAccounts.contains(where: { $0.id == route.account }) {
+            appState.setCurrentProfile(nil)
+        }
+        appState.selection = MailboxSelection(accountID: nil, labelID: "INBOX", labelName: "收件箱")
+        guard let messageID = route.messageID, let threadID = route.threadID else { return }
+        // 推迟一拍：列表要先按新的 selection 重算，选中项才落得住
+        let rowID = conversationView ? threadID : messageID
+        Task { @MainActor in
+            appState.selectedThreads = [SelectedThread(accountID: route.account, threadID: rowID)]
         }
     }
 }

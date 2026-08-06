@@ -97,7 +97,10 @@ enum BackfillPolicy {
 final class MailStore: ObservableObject {
     /// 池子内容的版本号。视图订阅它来决定什么时候重算列表，
     /// 比订阅整个字典便宜，也避免拿着一份过期快照。
-    @Published private(set) var revision = 0
+    @Published private(set) var revision = 0 {
+        // 未读数只可能随池子变化，所以搭在这里，不必让外面记着去更新角标
+        didSet { scheduleBadgeUpdate() }
+    }
     /// 最近一次失败（界面提示用）。
     @Published var lastError: String?
 
@@ -106,6 +109,7 @@ final class MailStore: ObservableObject {
     private var syncing: Set<String> = []
     private var pools: [String: AccountPool] = [:]
     private var persistTasks: [String: Task<Void, Never>] = [:]
+    private var badgeTask: Task<Void, Never>?
 
     // MARK: - 读
 
@@ -287,11 +291,16 @@ final class MailStore: ObservableObject {
     }
 
     /// 新到的邮件 history 只给了 id，得把信头取回来才能显示。
+    ///
+    /// 这里也是新邮件通知唯一的来源：`added` 只装 `history.messagesAdded`，
+    /// 回溯拉取走的是 `merge` 那条线，所以首次同步几百封不会变成几百条通知。
+    /// 通知内容要的发件人和主题就在这批 metadata 里，不必再发一次请求。
     private func fetchNew(_ added: [String: String], account: String) async {
         let ids = added.keys.filter { pools[account]?.messages[$0] == nil }
         guard !ids.isEmpty else { return }
         let fresh = await fetchMetadata(Array(ids), api: GmailAPI(account: account))
         merge(fresh, into: account)
+        NewMailNotifier.shared.enqueue(fresh, account: account)
     }
 
     /// 拿服务器状态纠正几封邮件（本地改标签失败时用）。
@@ -352,6 +361,39 @@ final class MailStore: ObservableObject {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled, let self, let pool = self.pools[account] else { return }
             await MailCache.shared.savePool(pool, account: account)
+        }
+    }
+
+    // MARK: - Dock 角标
+
+    /// 所有账号收件箱里的未读数。
+    ///
+    /// 不看当前分组——角标是「有没有人找我」，不该因为切了个分组就变。
+    /// 被静音的账号不计入：用户说了不想被它打扰，角标也是打扰的一种。
+    func unreadInboxCount() -> Int {
+        let muted = NotifyPolicy.mutedAccounts
+        return pools.reduce(0) { total, entry in
+            guard !muted.contains(entry.key) else { return total }
+            return total + entry.value.messages.values.filter {
+                let labels = Set($0.labelIds)
+                return labels.contains("INBOX") && labels.contains("UNREAD")
+                    && labels.isDisjoint(with: ["SPAM", "TRASH"])
+            }.count
+        }
+    }
+
+    /// 立刻重算角标（设置里改了开关或静音名单时用）。
+    func refreshBadge() {
+        NewMailNotifier.shared.updateBadge(unreadInboxCount())
+    }
+
+    /// 合并短时间内的多次改动——连着标记十几封已读不该把几千封邮件扫十几遍。
+    private func scheduleBadgeUpdate() {
+        badgeTask?.cancel()
+        badgeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.refreshBadge()
         }
     }
 
