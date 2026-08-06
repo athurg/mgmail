@@ -25,15 +25,6 @@ final class ThreadRowCoordinator: ObservableObject {
     var model: ThreadListModel!
     var appState: AppState!
 
-    /// 每行在列表坐标系里的位置，供覆盖其上的拖拽层做命中判断。
-    /// 普通 var：布局时频繁更新，不该触发任何刷新。
-    var rowFrames: [SelectedThread: CGRect] = [:]
-
-    /// 列表坐标 → 该处是哪一行。
-    func row(at point: CGPoint) -> SelectedThread? {
-        rowFrames.first { $0.value.contains(point) }?.key
-    }
-
     /// 行内标签 chip 用的映射。缓存在这里而不是每次布局现算：
     /// 字典是堆分配的，现算出来的新字典即使内容相同，缓冲区地址也不同，
     /// SwiftUI 会据此认为每一行都变了，于是重建整行、重新注册菜单/手势/拖放 —— 又是重入。
