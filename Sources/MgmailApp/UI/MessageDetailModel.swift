@@ -18,12 +18,8 @@ struct RenderedMessage: Codable, Identifiable {
     /// 原会话已有的 Message-ID 链（References 头）。回复时接在后面。
     let referencesHeader: [String]?
 
-    var dateText: String {
-        guard let date else { return "" }
-        let f = DateFormatter()
-        f.dateFormat = "yyyy年M月d日 HH:mm"
-        return f.string(from: date)
-    }
+    @MainActor
+    var dateText: String { DateText.messageHeader(date) }
 
     /// 返回替换了正文的副本。
     func withBody(_ html: String) -> RenderedMessage {
@@ -122,11 +118,15 @@ final class MessageDetailModel: ObservableObject {
 
             // 先把内联图片全部解析好再一次性设置，避免出现「原始 cid → 解析后」的中间态闪烁
             var rendered = raw.map { Self.render($0) }
-            rendered = await resolveInline(rendered, rawMessages: raw, account: account)
+            let complete: Bool
+            (rendered, complete) = await resolveInline(rendered, rawMessages: raw, account: account)
             guard self.threadID == threadID else { return }
 
             messages = rendered
             subject = rendered.first?.subject ?? "（无主题）"
+            // 有内联图没换下来就先不落盘。正文缓存是「一辈子只拉一次」的，
+            // 这时候存进去，一次网络抖动造成的破图就再也没机会修好了。
+            guard complete else { return }
             let cached = CachedThread(subject: subject, messages: rendered)
             await MailCache.shared.saveThread(cached, account: account, threadID: threadID,
                                               conversation: conversation)
@@ -142,9 +142,13 @@ final class MessageDetailModel: ObservableObject {
     }
 
     /// 把正文里的 `cid:` 内联图片替换为 data URI；优先用缓存，缺失才下载并缓存。
+    ///
+    /// 第二个返回值是「有没有全换下来」。有一张没换成，这份正文就不该进缓存——
+    /// 详见 `fetch` 里落盘前的那道判断。
     private func resolveInline(_ rendered: [RenderedMessage], rawMessages: [GmailMessage],
-                               account: String) async -> [RenderedMessage] {
+                               account: String) async -> (messages: [RenderedMessage], complete: Bool) {
         var result = rendered
+        var complete = true
         for message in rawMessages {
             let inlines = MimeParser.inlineImages(message.payload)
             guard !inlines.isEmpty,
@@ -164,13 +168,14 @@ final class MessageDetailModel: ObservableObject {
                     uri = "data:\(img.mimeType);base64,\(data.base64EncodedString())"
                     await MailCache.shared.saveInlineDataURI(uri, account: account, key: key)
                 } else {
+                    complete = false
                     continue
                 }
                 html = html.replacingOccurrences(of: "cid:\(img.contentID)", with: uri)
             }
             result[idx] = result[idx].withBody(html)
         }
-        return result
+        return (result, complete)
     }
 
     // MARK: - 修改（读/星标/归档/标签）

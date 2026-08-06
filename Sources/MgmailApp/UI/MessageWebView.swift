@@ -42,6 +42,11 @@ final class PassthroughWebView: WKWebView {
 @MainActor
 enum MessageBodyLayout {
     private static var heights: [String: CGFloat] = [:]
+    /// 与 `heights` 同步维护的写入顺序，用来把它裁在上限之内。
+    private static var order: [String] = []
+    /// 记多少封的高度。这只是个开屏加速的提示值，记不住最多是正文先塌一下再撑开，
+    /// 所以没必要为它无限占着内存——长期开着的窗口会一直往里加。
+    private static let capacity = 400
     private static var warmup: WKWebView?
 
     static func height(for messageID: String) -> CGFloat {
@@ -49,7 +54,13 @@ enum MessageBodyLayout {
     }
 
     static func remember(_ height: CGFloat, for messageID: String) {
-        heights[messageID] = height
+        if heights.updateValue(height, forKey: messageID) == nil {
+            order.append(messageID)
+        }
+        guard order.count > capacity else { return }
+        let drop = order.count - capacity
+        for old in order.prefix(drop) { heights.removeValue(forKey: old) }
+        order.removeFirst(drop)
     }
 
     /// 提前起一个空 WebView，把 WebKit 的渲染进程拉起来，

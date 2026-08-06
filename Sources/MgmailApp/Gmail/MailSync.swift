@@ -17,6 +17,8 @@ struct SyncOutcome {
     var labelChanges: [String: LabelDelta] = [:]
     /// 起点太旧，增量拿不到了，调用方需要退回全量重建。
     var needsFullReload = false
+    /// 本轮拉到的最新位点。**故意不在这里存盘**——见 `MailSync.incremental` 的说明。
+    var latestHistoryID: String?
 
     var isEmpty: Bool {
         added.isEmpty && removed.isEmpty && labelChanges.isEmpty && !needsFullReload
@@ -29,6 +31,12 @@ struct SyncOutcome {
 /// 而且它是**账户级**的：一个请求就覆盖了这个账号的所有邮箱。
 enum MailSync {
     /// 拉取某账号自上次位点以来的变化。
+    ///
+    /// 新位点只放进结果里带回去，**不在这里存盘**：history 只给了新邮件的 id，
+    /// 信头还得再取一趟，那一趟失败了这批邮件就没进池子。位点要是已经推过去了，
+    /// 下次增量便不会再提这些邮件，而回溯那条线一旦走到头也不会回头补——
+    /// 一次网络抖动就够让几封信永远消失。所以存盘的时机交给调用方，
+    /// 由它在信头确实拿到之后再落。
     static func incremental(account: String) async -> SyncOutcome {
         let api = GmailAPI(account: account)
 
@@ -62,10 +70,14 @@ enum MailSync {
         for id in outcome.added.keys {
             outcome.labelChanges.removeValue(forKey: id)
         }
-        if let latestHistoryID {
-            await MailCache.shared.saveHistoryID(latestHistoryID, account: account)
-        }
+        outcome.latestHistoryID = latestHistoryID
         return outcome
+    }
+
+    /// 把位点推到本轮拉到的位置。调用方确认这一轮的邮件都已落地后才调。
+    static func commit(_ outcome: SyncOutcome, account: String) async {
+        guard let id = outcome.latestHistoryID else { return }
+        await MailCache.shared.saveHistoryID(id, account: account)
     }
 
     /// 还没有位点时记一个，作为后续增量的起点。

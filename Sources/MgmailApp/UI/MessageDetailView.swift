@@ -139,6 +139,7 @@ struct MessageDetailView: View {
                                            quotedBody: MailQuote.reply(to: message))
         case .forward:
             id = ComposeStore.shared.forward(message, account: account,
+                                             sourceAccount: selected.accountID,
                                              quotedBody: MailQuote.forward(message))
         case .new:
             id = ComposeStore.shared.newMail(from: account)
@@ -348,9 +349,11 @@ struct MessageCard: View {
         .onTapGesture { onToggle() }
     }
 
+    /// 发件人头像配色同样由地址稳定推导，理由见 `StableHash`。
     private var avatar: some View {
         Circle()
-            .fill(Color(hue: Double(abs(message.fromEmail.hashValue) % 360) / 360, saturation: 0.5, brightness: 0.85))
+            .fill(Color(hue: Double(StableHash.index(message.fromEmail, upperBound: 360)) / 360,
+                        saturation: 0.5, brightness: 0.85))
             .frame(width: 32, height: 32)
             .overlay(Text(String(message.fromName.first ?? "?").uppercased())
                 .font(.system(size: 14, weight: .bold)).foregroundStyle(.white))
@@ -432,7 +435,8 @@ struct AttachmentChip: View {
             do {
                 let data = try await GmailAPI(account: account)
                     .getAttachment(messageID: attachment.messageID, attachmentId: attachment.attachmentId)
-                try data.write(to: url)
+                // 写盘挪出主线程：几十 MB 的附件在主线程上写，界面会整个僵住
+                try await Task.detached { try data.write(to: url) }.value
                 isDownloading = false
             } catch {
                 errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

@@ -242,7 +242,7 @@ struct ThreadListView: View {
     private var emptyHint: String {
         guard readFilter == .all else { return "换个过滤条件看看" }
         guard let oldest = oldestBackfillDate else { return "这个邮箱在已同步的邮件里一封都没有" }
-        return "已同步 \(Self.dateText(oldest)) 至今的邮件，这个邮箱在这个范围里没有内容。要看更早的，在「设置 → 同步」里调大回溯范围。"
+        return "已同步 \(DateText.fullDate(oldest)) 至今的邮件，这个邮箱在这个范围里没有内容。要看更早的，在「设置 → 同步」里调大回溯范围。"
     }
 
     /// 列表底部标出回溯到哪儿了——到底就是到底，不再往下自动加载。
@@ -251,7 +251,7 @@ struct ThreadListView: View {
         if !model.summaries.isEmpty, let oldest = oldestBackfillDate {
             HStack {
                 Spacer()
-                Text("已回溯至 \(Self.dateText(oldest))")
+                Text("已回溯至 \(DateText.fullDate(oldest))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                 Spacer()
@@ -265,12 +265,6 @@ struct ThreadListView: View {
     /// 当前视图涉及的账号里，回溯得最浅的那个（多账号聚合时，短板决定了能看到多早）。
     private var oldestBackfillDate: Date? {
         selectionAccounts.compactMap { mailStore.oldestDate(account: $0) }.max()
-    }
-
-    private static func dateText(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy年M月d日"
-        return f.string(from: date)
     }
 
     /// 垃圾邮件 / 废纸篓：Gmail 的列表接口默认不返回，第一次点进去时单独拉一次。
@@ -472,7 +466,7 @@ struct ThreadRow: View {
                             .background(Capsule().fill(Color.secondary.opacity(0.15)))
                     }
                     Spacer()
-                    Text(Self.dateText(summary.date))
+                    Text(DateText.listRow(summary.date))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if let account = accountBadge {
@@ -527,16 +521,4 @@ struct ThreadRow: View {
         .padding(.top, 1)
     }
 
-    static func dateText(_ date: Date?) -> String {
-        guard let date else { return "" }
-        let formatter = DateFormatter()
-        if Calendar.current.isDateInToday(date) {
-            formatter.dateFormat = "HH:mm"
-        } else if Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) {
-            formatter.dateFormat = "M月d日"
-        } else {
-            formatter.dateFormat = "yyyy/M/d"
-        }
-        return formatter.string(from: date)
-    }
 }

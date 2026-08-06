@@ -40,4 +40,7 @@ rm -rf "$TMP"
 
 echo ""
 echo "✅ 已导出：$OUT"
-echo "⚠️  内含 refresh token（可直接访问你的 Gmail）。请妥善保管，切勿外传，也不要提交进代码仓库。"
+echo "⚠️  内含 refresh token —— 拿到它就等于拿到你的 Gmail 读写权限，且它不会自己过期。"
+echo "    · 只走可信通道传输（AirDrop、加密 U 盘），不要走聊天软件或网盘"
+echo "    · 装完立刻删掉两端的这个文件：rm -P \"$OUT\""
+echo "    · 万一外泄：到 https://myaccount.google.com/permissions 撤销 Mgmail 的授权"

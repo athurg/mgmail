@@ -4,10 +4,15 @@ import Foundation
 /// 捕获 OAuth 重定向里的授权码后自动关闭。
 ///
 /// 说明：本机（macOS 26）`NWListener` 监听会返回 EINVAL，故改用 BSD socket。
-final class LoopbackServer {
+///
+/// 三条线程会同时碰它：调用方所在的线程、`queue` 上那条 accept 循环、
+/// 以及取消回调所在的任意线程。可变状态因此全部收在 `lock` 后面，
+/// `@unchecked Sendable` 指的就是这件事——不是「假设不会并发」，而是已经锁住了。
+final class LoopbackServer: @unchecked Sendable {
+    private let lock = NSLock()
     private var listenFD: Int32 = -1
-    private let queue = DispatchQueue(label: "com.mgmail.app.loopback")
     private var pendingBox: ContinuationBox?
+    private let queue = DispatchQueue(label: "com.mgmail.app.loopback")
 
     /// 已分配的端口。
     private(set) var port: UInt16 = 0
@@ -43,10 +48,13 @@ final class LoopbackServer {
         _ = withUnsafeMutablePointer(to: &bound) { p in
             p.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
         }
-        listenFD = fd
+        lock.withLock { listenFD = fd }
         port = UInt16(bigEndian: bound.sin_port)
         return port
     }
+
+    /// 当前的监听 fd（已关闭时为 -1）。
+    private var currentFD: Int32 { lock.withLock { listenFD } }
 
     /// 等待浏览器重定向回来，返回 query 参数（含 code / state / error）。
     /// 支持任务取消：外层 Task 被取消时会关闭服务器并抛出 CancellationError。
@@ -54,7 +62,7 @@ final class LoopbackServer {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[String: String], Error>) in
                 let box = ContinuationBox(cont)
-                pendingBox = box
+                lock.withLock { pendingBox = box }
 
                 // 超时：关闭监听 socket 让 accept 返回，然后抛超时
                 queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
@@ -64,7 +72,7 @@ final class LoopbackServer {
                 queue.async { [weak self] in
                     guard let self else { return }
                     while true {
-                        let clientFD = accept(self.listenFD, nil, nil)
+                        let clientFD = accept(self.currentFD, nil, nil)
                         if clientFD < 0 {
                             // 监听 socket 被关闭（超时/取消/stop），退出
                             _ = box.resume(throwing: OAuthError.timeout)
@@ -86,17 +94,18 @@ final class LoopbackServer {
                 }
             }
         } onCancel: {
-            _ = pendingBox?.resume(throwing: CancellationError())
+            _ = lock.withLock { pendingBox }?.resume(throwing: CancellationError())
             stop()
         }
     }
 
-    /// 关闭监听。
+    /// 关闭监听。关掉 fd 会让阻塞中的 accept 立刻返回 -1，循环随之退出。
     func stop() {
-        if listenFD >= 0 {
-            close(listenFD)
-            listenFD = -1
+        let fd: Int32 = lock.withLock {
+            defer { listenFD = -1 }
+            return listenFD
         }
+        if fd >= 0 { close(fd) }
     }
 
     // MARK: - 私有
@@ -152,7 +161,8 @@ final class LoopbackServer {
 }
 
 /// 保证 continuation 只被 resume 一次的线程安全包装。
-private final class ContinuationBox {
+/// 内部状态全在 `lock` 之后，故 `@unchecked Sendable` 成立。
+private final class ContinuationBox: @unchecked Sendable {
     private var cont: CheckedContinuation<[String: String], Error>?
     private let lock = NSLock()
 

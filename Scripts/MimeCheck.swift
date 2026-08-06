@@ -64,12 +64,40 @@ struct MimeCheck {
         let ascii = text(of: makeMail(subject: "Weekly report"))
         expect(ascii.contains("Subject: Weekly report"), "纯 ASCII 主题不该平白编码")
 
+        longHeaders()
+
         let mail = text(of: makeMail())
         expect(mail.contains("<zhang@example.com>"), "邮箱本身要原样保留")
         expect(mail.contains("From: =?UTF-8?B?"), "中文显示名要编码")
         expect(mail.contains("<me@example.com>"), "发件人邮箱要原样保留")
         expect(!mail.contains("Cc:"), "没填抄送就不该写这个头")
         expect(!mail.contains("Bcc:"), "没填密送就不该写这个头")
+    }
+
+    /// 长的非 ASCII 主题：RFC 2047 规定单个 encoded-word 不超过 75 字符，
+    /// RFC 2822 规定一行不超过 998。整段编成一个词两条都会破。
+    static func longHeaders() {
+        let subject = String(repeating: "季度汇报与下一阶段计划", count: 12)  // 132 个汉字
+        let mail = text(of: makeMail(subject: subject))
+
+        let words = MimeBuilder.encodeHeaderText(subject)
+            .components(separatedBy: "\r\n ")
+        expect(words.count > 1, "长主题该切成多个 encoded-word")
+        expect(words.allSatisfy { $0.count <= 75 }, "每个 encoded-word 不得超过 75 字符")
+        expect(words.allSatisfy { $0.hasPrefix("=?UTF-8?B?") && $0.hasSuffix("?=") },
+               "每一段都得是完整的 encoded-word")
+
+        for line in mail.components(separatedBy: "\r\n") {
+            expect(line.count <= 998, "报文里不该有超过 998 字符的行")
+        }
+
+        // 最关键的一条：按字节切会把一个汉字的三字节劈开，解出来就是乱码
+        let decoded = words.compactMap { word -> String? in
+            let inner = word.dropFirst("=?UTF-8?B?".count).dropLast(2)
+            guard let data = Data(base64Encoded: String(inner)) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }.joined()
+        expect(decoded == subject, "拼回去要和原主题一字不差（汉字不能被切断）")
     }
 
     // MARK: - 地址拆分

@@ -60,10 +60,16 @@ final class ComposeStore: ObservableObject {
     }
 
     /// 转发。不预填收件人，也不接进原会话——转发是另起一串。
-    func forward(_ message: RenderedMessage, account: Account, quotedBody: String) -> UUID {
+    ///
+    /// 原件的附件要跟着走：转发一封「请见附件」却把附件丢了，收信人只会一头雾水。
+    /// 这里只记下引用，内容由撰写窗口起来之后再取。
+    func forward(_ message: RenderedMessage, account: Account, sourceAccount: String,
+                 quotedBody: String) -> UUID {
         var mail = OutgoingMail(fromName: account.displayName, fromEmail: account.email)
         mail.subject = prefixed(message.subject, with: "Fwd:")
         mail.body = "\n\n" + quotedBody
+        mail.pendingAttachments = message.attachments
+        mail.attachmentSourceAccount = sourceAccount
         return register(Seed(kind: .forward, mail: mail))
     }
 

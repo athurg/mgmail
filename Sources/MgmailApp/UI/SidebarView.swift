@@ -15,6 +15,8 @@ struct SidebarView: View {
     @State private var expandedLabels: Set<String> = LabelExpansionStore.load()
     /// 自定义标签分组里被折叠的账户（默认展开，记录“已折叠”）。
     @State private var collapsedAccounts: Set<String> = LabelExpansionStore.loadCollapsed()
+    /// 待确认移除的账号。移除会删掉登录凭据和整份本地缓存，不该点一下就执行。
+    @State private var pendingRemoval: Account?
 
     var body: some View {
         List(selection: Binding(
@@ -39,6 +41,21 @@ struct SidebarView: View {
         .sheet(item: $appState.labelEditTarget) { target in
             LabelEditSheet(target: target)
                 .environmentObject(labelStore)
+        }
+        // 与设置窗口里的移除走同一道确认，别处点得动的地方不该更宽松
+        .alert("移除账号", isPresented: Binding(
+            get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }
+        )) {
+            Button("取消", role: .cancel) { pendingRemoval = nil }
+            Button("移除", role: .destructive) {
+                if let account = pendingRemoval {
+                    mailStore.drop(account: account.id)
+                    appState.removeAccount(account)
+                }
+                pendingRemoval = nil
+            }
+        } message: {
+            Text("将从 Mgmail 移除「\(pendingRemoval?.email ?? "")」并删除其本地登录凭据与缓存。此操作不影响你的 Gmail 账户本身。")
         }
         .task(id: appState.activeAccounts.map(\.id)) {
             // 只补齐本地还没有的账号标签；已有缓存就直接用，要最新的走账号行上的刷新按钮
@@ -151,7 +168,7 @@ struct SidebarView: View {
                 }
                 // 本地邮件回溯到哪儿了。淡淡一行，解释了「为什么有些邮箱是空的」
                 if let oldest = mailStore.oldestDate(account: account.id) {
-                    Text("邮件自 \(Self.backfillText(oldest))")
+                    Text("邮件自 \(DateText.backfill(oldest))")
                         .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
@@ -185,23 +202,13 @@ struct SidebarView: View {
             }
             Divider()
             SettingsLink { Text("账号与分组…") }
-            Button("移除账户", role: .destructive) {
-                mailStore.drop(account: account.id)
-                appState.removeAccount(account)
-            }
+            Button("移除账户…", role: .destructive) { pendingRemoval = account }
         }
     }
 
     /// 手动刷新一个账号：标签拉新，然后按位点同步邮件变化。
     private func refresh(_ account: Account) {
         Task { await MailRefresh.account(account.id, labels: labelStore, mail: mailStore) }
-    }
-
-    private static func backfillText(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
-            ? "M月d日" : "yyyy年M月"
-        return f.string(from: date)
     }
 
     /// 「分类」等次级分组的展开绑定（默认折叠，记录“已展开”，与标签树同一套持久化）。

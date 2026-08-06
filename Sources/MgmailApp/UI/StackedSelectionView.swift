@@ -147,7 +147,7 @@ struct StackedSelectionView: View {
                         Text(info.from.isEmpty ? "（未知发件人）" : info.from)
                             .font(.body).bold().lineLimit(1)
                         Spacer()
-                        Text(dateText(info.date)).font(.caption).foregroundStyle(.secondary)
+                        Text(DateText.card(info.date)).font(.caption).foregroundStyle(.secondary)
                     }
                     Text(info.subject.isEmpty ? "（无主题）" : info.subject)
                         .font(.body).lineLimit(2)
@@ -167,13 +167,6 @@ struct StackedSelectionView: View {
                 .padding(20)
             }
             .opacity(isFront ? 1 : 0.97)
-    }
-
-    private func dateText(_ date: Date?) -> String {
-        guard let date else { return "" }
-        let f = DateFormatter()
-        f.dateFormat = "M月d日"
-        return f.string(from: date)
     }
 }
 

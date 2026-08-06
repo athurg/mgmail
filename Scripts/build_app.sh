@@ -27,6 +27,14 @@ EXECUTABLE="MgmailApp"
 DIST="dist"
 APP_DIR="$DIST/$APP_NAME.app"
 
+# 版本号取自最近的 git tag（形如 v1.2.3），没有 tag 就退回 0.0.0。
+# 写死在脚本里的话，每次发版都得记得来改一次——而那件事一定会被忘掉。
+RAW_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo "")"
+SHORT_VERSION="${RAW_TAG#v}"
+SHORT_VERSION="${SHORT_VERSION:-0.0.0}"
+# 构建号用提交数，保证同一版本的两次构建也能区分先后
+BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || echo "1")"
+
 echo "==> swift build -c $CONFIG"
 swift build -c "$CONFIG"
 
@@ -36,7 +44,7 @@ if [[ ! -x "$BIN_PATH" ]]; then
   exit 1
 fi
 
-echo "==> 组装 $APP_DIR"
+echo "==> 组装 $APP_DIR（版本 $SHORT_VERSION，构建 $BUILD_NUMBER）"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
@@ -76,9 +84,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$SHORT_VERSION</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>$BUILD_NUMBER</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSPrincipalClass</key>

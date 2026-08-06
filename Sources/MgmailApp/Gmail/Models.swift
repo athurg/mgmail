@@ -6,8 +6,6 @@ struct GmailLabel: Codable, Identifiable, Hashable {
     let id: String
     let name: String
     let type: String?               // "system" | "user"
-    let messagesUnread: Int?
-    let messagesTotal: Int?
     let color: LabelColor?
 
     var isSystem: Bool { type == "system" }
@@ -18,26 +16,11 @@ struct LabelColor: Codable, Hashable {
     let backgroundColor: String?
 }
 
-// MARK: - 会话列表
-
-struct ThreadListResponse: Decodable {
-    let threads: [ThreadRef]?
-    let nextPageToken: String?
-    let resultSizeEstimate: Int?
-}
-
-struct ThreadRef: Decodable {
-    let id: String
-    let snippet: String?
-    let historyId: String?
-}
-
-// MARK: - 邮件列表（不按会话显示时用）
+// MARK: - 邮件列表
 
 struct MessageListResponse: Decodable {
     let messages: [MessageRef]?
     let nextPageToken: String?
-    let resultSizeEstimate: Int?
 }
 
 struct MessageRef: Decodable {
@@ -65,9 +48,6 @@ struct GmailMessage: Decodable, Identifiable {
         guard let ms = internalDate, let v = Double(ms) else { return nil }
         return Date(timeIntervalSince1970: v / 1000)
     }
-
-    var isUnread: Bool { labelIds?.contains("UNREAD") ?? false }
-    var isStarred: Bool { labelIds?.contains("STARRED") ?? false }
 }
 
 struct MessagePart: Decodable {

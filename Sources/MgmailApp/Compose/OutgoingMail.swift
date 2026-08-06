@@ -22,6 +22,14 @@ struct OutgoingMail {
     /// Gmail 自己的会话 id。发送时带上，这封才会落在原会话里而不是另起一串。
     var threadID: String?
 
+    /// 转发时要一并带走的原邮件附件。
+    ///
+    /// 只存引用不存内容：附件动辄几 MB，开窗那一刻同步拉下来会让窗口卡着不出来。
+    /// 窗口起来之后由 `ComposeModel` 后台取回，取一个填一个。
+    var pendingAttachments: [Attachment] = []
+    /// `pendingAttachments` 从哪个账号取。转发的原件未必属于当前发件账号。
+    var attachmentSourceAccount: String?
+
     /// 至少得有一个收件人才能发。
     var canSend: Bool {
         !MimeBuilder.splitAddresses(to).isEmpty

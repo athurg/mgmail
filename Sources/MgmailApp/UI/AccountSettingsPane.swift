@@ -3,6 +3,7 @@ import SwiftUI
 /// 设置窗口的「账号」页：改显示名、加备注、移除账号、添加账号。
 struct AccountSettingsPane: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var mailStore: MailStore
     @State private var pendingRemoval: Account?
 
     var body: some View {
@@ -39,7 +40,11 @@ struct AccountSettingsPane: View {
         )) {
             Button("取消", role: .cancel) { pendingRemoval = nil }
             Button("移除", role: .destructive) {
-                if let account = pendingRemoval { appState.removeAccount(account) }
+                if let account = pendingRemoval {
+                    // 内存里的池子也要一并撤掉，否则账号没了邮件还留在聚合视图里
+                    mailStore.drop(account: account.id)
+                    appState.removeAccount(account)
+                }
                 pendingRemoval = nil
             }
         } message: {

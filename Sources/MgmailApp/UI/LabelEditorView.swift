@@ -6,8 +6,7 @@ struct LabelEditorView: View {
     let account: String
     @ObservedObject var detail: MessageDetailModel
     @EnvironmentObject private var labelStore: LabelStore
-    /// 应用成功后回调，带上本次实际的增删，方便调用方免去一次网络确认。
-    /// 关闭 popover（由宿主视图控制，比 dismiss 在 popover 里更可靠）。
+    /// 关闭 popover。由宿主视图控制，比在 popover 里用 `dismiss` 可靠。
     var onClose: () -> Void = {}
 
     /// 打开面板时该会话已有的用户标签。

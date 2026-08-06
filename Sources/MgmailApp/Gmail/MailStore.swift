@@ -30,6 +30,13 @@ struct PooledMessage: Codable, Identifiable, Hashable {
     }
 }
 
+extension MailboxQuery {
+    /// 这封邮件属不属于该邮箱。判断只看标签，见 `MailboxQuery` 的说明。
+    func belongs(_ message: PooledMessage) -> Bool {
+        labelsBelong(message.labelIds)
+    }
+}
+
 /// 一条拉取线翻到哪了。
 struct PoolCursor: Codable {
     var pageToken: String?
@@ -175,7 +182,11 @@ final class MailStore: ObservableObject {
                 revision += 1
             } else {
                 apply(outcome, to: account)
-                await fetchNew(outcome.added, account: account)
+                // 信头确实取回来了才把位点推过去。取不回来就让位点停在原地，
+                // 下一轮从同一个起点重来一次——多拉一次总好过邮件永远不出现。
+                if await fetchNew(outcome.added, account: account) {
+                    await MailSync.commit(outcome, account: account)
+                }
             }
         }
         await backfill(account: account, scope: nil)
@@ -220,7 +231,12 @@ final class MailStore: ObservableObject {
                     break
                 }
 
-                let fetched = await fetchMetadata(refs.map(\.id), api: api)
+                // 这一页的信头没取回来就停在这儿，游标不动。往前翻的话，
+                // 这一页的邮件谁也不会再回来拉一次，等于凭空少掉一页。
+                guard let fetched = await fetchMetadata(refs.map(\.id), api: api) else {
+                    lastError = "同步中断，稍后会自动重试"
+                    break
+                }
                 merge(fetched, into: account)
                 cursor.fetched += fetched.count
                 cursor.pageToken = list.nextPageToken
@@ -247,12 +263,15 @@ final class MailStore: ObservableObject {
     }
 
     /// 一次 batch 把整页的 metadata 取回来：一页 100 封是 1 个请求，不是 100 个。
-    private func fetchMetadata(_ ids: [String], api: GmailAPI) async -> [PooledMessage] {
+    ///
+    /// 返回 nil 表示这一趟请求本身没成功，区别于「成功了但一封都没解出来」。
+    /// 两者必须分开：前者要让调用方停下重来，后者才可以放心往前走。
+    private func fetchMetadata(_ ids: [String], api: GmailAPI) async -> [PooledMessage]? {
         guard !ids.isEmpty else { return [] }
         let items = ids.map {
             BatchItem(id: $0, path: "/messages/\($0)", query: Self.metadataQuery)
         }
-        guard let responses = try? await api.batchGet(items) else { return [] }
+        guard let responses = try? await api.batchGet(items) else { return nil }
         return ids.compactMap { id in
             guard let result = responses[id], result.isSuccess,
                   let message = try? JSONDecoder().decode(GmailMessage.self, from: result.body)
@@ -295,18 +314,23 @@ final class MailStore: ObservableObject {
     /// 这里也是新邮件通知唯一的来源：`added` 只装 `history.messagesAdded`，
     /// 回溯拉取走的是 `merge` 那条线，所以首次同步几百封不会变成几百条通知。
     /// 通知内容要的发件人和主题就在这批 metadata 里，不必再发一次请求。
-    private func fetchNew(_ added: [String: String], account: String) async {
+    /// 返回信头是否确实取回来了——位点要等这个点头才能往前推。
+    @discardableResult
+    private func fetchNew(_ added: [String: String], account: String) async -> Bool {
         let ids = added.keys.filter { pools[account]?.messages[$0] == nil }
-        guard !ids.isEmpty else { return }
-        let fresh = await fetchMetadata(Array(ids), api: GmailAPI(account: account))
+        guard !ids.isEmpty else { return true }
+        guard let fresh = await fetchMetadata(Array(ids), api: GmailAPI(account: account)) else {
+            return false
+        }
         merge(fresh, into: account)
         NewMailNotifier.shared.enqueue(fresh, account: account)
+        return true
     }
 
     /// 拿服务器状态纠正几封邮件（本地改标签失败时用）。
     func revalidate(account: String, messageIDs: [String]) async {
-        guard !messageIDs.isEmpty else { return }
-        let fresh = await fetchMetadata(messageIDs, api: GmailAPI(account: account))
+        guard !messageIDs.isEmpty,
+              let fresh = await fetchMetadata(messageIDs, api: GmailAPI(account: account)) else { return }
         merge(fresh, into: account)
         persist(account)
     }

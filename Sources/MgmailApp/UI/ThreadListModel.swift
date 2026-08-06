@@ -101,6 +101,8 @@ final class ThreadListModel: ObservableObject {
 
     private var store: MailStore?
     private var cancellable: AnyCancellable?
+    private var recomputeTask: Task<Void, Never>?
+    private var lastRecompute: ContinuousClock.Instant = .now - .seconds(3600)
 
     private(set) var accounts: [String] = []
     private(set) var labelID = ""
@@ -114,6 +116,31 @@ final class ThreadListModel: ObservableObject {
         guard self.store !== store else { return }
         self.store = store
         cancellable = store.$revision.sink { [weak self] _ in
+            self?.scheduleRecompute()
+        }
+    }
+
+    /// 变化密集时合并重算。
+    ///
+    /// 重算要把整个账户池分组、排序，几千封就是几千封；而池子的版本号变得很密——
+    /// 回溯每拉回一页加一次、连着标十几封已读就加十几次。不合并的话，
+    /// 一次首轮同步能让同一份列表重算几十遍，全压在主线程上。
+    ///
+    /// 但也不能一律延后：点一下「标为已读」，那个小圆点该当场就灭。
+    /// 所以隔了一会儿的第一次变化立刻算，紧跟着的才攒起来——
+    /// 单个操作照旧即时，成串的变化只算一次。
+    private static let mergeWindow: Duration = .milliseconds(80)
+
+    private func scheduleRecompute() {
+        recomputeTask?.cancel()
+        recomputeTask = nil
+        if ContinuousClock.now - lastRecompute >= Self.mergeWindow {
+            recompute()
+            return
+        }
+        recomputeTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.mergeWindow)
+            guard !Task.isCancelled else { return }
             self?.recompute()
         }
     }
@@ -132,6 +159,9 @@ final class ThreadListModel: ObservableObject {
     // MARK: - 派生
 
     private func recompute() {
+        recomputeTask?.cancel()
+        recomputeTask = nil
+        lastRecompute = .now
         guard let store else { summaries = []; return }
         var rows: [ThreadSummary] = []
         for account in accounts {

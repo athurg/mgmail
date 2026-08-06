@@ -30,7 +30,8 @@ struct ComposeView: View {
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-            if !model.mail.attachments.isEmpty {
+            if !model.mail.attachments.isEmpty || model.isFetchingAttachments
+                || model.attachmentNotice != nil {
                 Divider()
                 attachmentBar
             }
@@ -42,6 +43,8 @@ struct ComposeView: View {
             get: { model.errorText != nil }, set: { if !$0 { model.errorText = nil } }
         )) { Button("好", role: .cancel) {} } message: { Text(model.errorText ?? "") }
         .onChange(of: model.didSend) { _, sent in if sent { close() } }
+        // 转发带过来的原件附件在窗口出现之后才取，免得开窗被几 MB 的下载卡住
+        .task { await model.loadPendingAttachments() }
         .onDisappear { ComposeStore.shared.discard(composeID) }
     }
 
@@ -133,6 +136,20 @@ struct ComposeView: View {
     private var attachmentBar: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
+                if model.isFetchingAttachments {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在取回原件附件…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                }
+                if let notice = model.attachmentNotice {
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                        .padding(.horizontal, 8)
+                }
                 ForEach(model.mail.attachments) { attachment in
                     HStack(spacing: 6) {
                         Image(systemName: "doc")

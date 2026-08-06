@@ -3,14 +3,15 @@ import AppKit
 
 /// 账号头像的下载与本地缓存（`~/Library/Application Support/Mgmail/avatars/<邮箱>.png`）。
 enum AvatarStore {
-    private static func dir() -> URL {
+    /// 头像目录。一次性迁移要按旧名字找文件，所以不能藏起来。
+    static var directory: URL {
         let d = GoogleConfig.supportDirectory.appendingPathComponent("avatars", isDirectory: true)
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }
 
     static func fileURL(for email: String) -> URL {
-        dir().appendingPathComponent(sanitize(email) + ".png")
+        directory.appendingPathComponent(StorageKey.account(email) + ".png")
     }
 
     /// 读取本地缓存的头像。
@@ -54,11 +55,6 @@ enum AvatarStore {
 
     static func remove(for email: String) {
         try? FileManager.default.removeItem(at: fileURL(for: email))
-    }
-
-    private static func sanitize(_ s: String) -> String {
-        let allowed = CharacterSet.alphanumerics
-        return String(s.unicodeScalars.map { allowed.contains($0) ? Character($0) : "_" })
     }
 }
 
