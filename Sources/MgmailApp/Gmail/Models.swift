@@ -145,3 +145,16 @@ struct ModifyRequest: Encodable {
     let addLabelIds: [String]?
     let removeLabelIds: [String]?
 }
+
+// MARK: - 发信
+
+/// 发送 / 存草稿的请求体：一封 base64url 编码的完整报文。
+struct RawMessageRequest: Encodable {
+    let raw: String
+    let threadId: String?
+}
+
+struct GmailDraft: Decodable, Identifiable {
+    let id: String
+    let message: GmailMessage?
+}

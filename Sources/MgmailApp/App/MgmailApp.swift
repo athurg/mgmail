@@ -20,9 +20,24 @@ struct MgmailApp: App {
         .windowStyle(.titleBar)
         .commands {
             SidebarCommands()
+            NewMailCommand(appState: appState)
             // 账号已在「设置」里统一管理，不再单独开菜单。
             // 「活动」窗口由下面的 Window 场景自动出现在「窗口」菜单里（⌘0）。
         }
+
+        // 撰写窗口。每封信一个窗口，所以是 WindowGroup 而不是单例 Window；
+        // 窗口值只是个 id，内容在 ComposeStore 里按 id 领。
+        WindowGroup(id: ComposeWindow.id, for: UUID.self) { $composeID in
+            if let composeID {
+                ComposeView(composeID: composeID)
+                    .environmentObject(appState)
+                    .environmentObject(labelStore)
+                    .environmentObject(mailStore)
+            }
+        }
+        .defaultSize(width: 680, height: 520)
+        // 不进「窗口 → 新建」菜单：新邮件有自己的 ⌘N，从那儿走才带得上发件人
+        .commandsRemoved()
 
         // 网络活动日志（仿 Apple Mail 的「活动」窗口，⌘0）。单例窗口，不跟主窗口走。
         Window("活动", id: ActivityWindow.id) {
@@ -35,6 +50,27 @@ struct MgmailApp: App {
             SettingsView()
                 .environmentObject(appState)
                 .environmentObject(mailStore)
+        }
+    }
+}
+
+/// 「文件 → 新邮件」（⌘N）。
+///
+/// 发件人取当前侧栏选中的那个账号，没选中就用第一个；一个账号都没有时按钮置灰
+/// ——没登录也就无从发信。
+struct NewMailCommand: Commands {
+    // 菜单栏拿不到 WindowGroup 里注入的环境对象，只能由 App 直接传进来
+    @ObservedObject var appState: AppState
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("新邮件") {
+                guard let account = appState.composeAccount else { return }
+                openWindow(id: ComposeWindow.id, value: ComposeStore.shared.newMail(from: account))
+            }
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(appState.composeAccount == nil)
         }
     }
 }

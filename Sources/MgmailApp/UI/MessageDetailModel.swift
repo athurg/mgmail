@@ -12,6 +12,11 @@ struct RenderedMessage: Codable, Identifiable {
     let attachments: [Attachment]
     /// 折叠态用的预览摘要（Gmail 提供的 snippet）。可选以兼容旧缓存解码。
     let snippet: String?
+    /// 本封的 Message-ID 头。回复时填进 In-Reply-To，对方的客户端才能把回信
+    /// 串进原会话。可选以兼容旧缓存解码。
+    let messageIDHeader: String?
+    /// 原会话已有的 Message-ID 链（References 头）。回复时接在后面。
+    let referencesHeader: [String]?
 
     var dateText: String {
         guard let date else { return "" }
@@ -23,7 +28,8 @@ struct RenderedMessage: Codable, Identifiable {
     /// 返回替换了正文的副本。
     func withBody(_ html: String) -> RenderedMessage {
         RenderedMessage(id: id, fromName: fromName, fromEmail: fromEmail, to: to, date: date,
-                        subject: subject, bodyHTML: html, attachments: attachments, snippet: snippet)
+                        subject: subject, bodyHTML: html, attachments: attachments, snippet: snippet,
+                        messageIDHeader: messageIDHeader, referencesHeader: referencesHeader)
     }
 }
 
@@ -231,7 +237,10 @@ final class MessageDetailModel: ObservableObject {
             subject: subject,
             bodyHTML: body,
             attachments: MimeParser.attachments(message.payload, messageID: message.id),
-            snippet: message.snippet
+            snippet: message.snippet,
+            messageIDHeader: MimeParser.header(message.payload, "Message-ID"),
+            referencesHeader: MimeParser.header(message.payload, "References")?
+                .split(whereSeparator: \.isWhitespace).map(String.init)
         )
     }
 

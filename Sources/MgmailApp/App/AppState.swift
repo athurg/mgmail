@@ -42,6 +42,19 @@ final class AppState: ObservableObject {
         selectedThreads.count == 1 ? selectedThreads.first : nil
     }
 
+    /// 新写一封信时用哪个账号发。
+    ///
+    /// 优先当前正看着的那封邮件所属账号，其次是侧栏选中的账号，最后退到第一个。
+    /// 「全部」这类聚合视图的 `accountID` 是 nil，落到最后一档。
+    var composeAccount: Account? {
+        let candidates = activeAccounts
+        if let id = singleSelection?.accountID,
+           let hit = candidates.first(where: { $0.id == id }) { return hit }
+        if let id = selection?.accountID,
+           let hit = candidates.first(where: { $0.id == id }) { return hit }
+        return candidates.first
+    }
+
     /// 当前选中会话的摘要信息（供多选时右栏画叠加卡片），按列表顺序。
     @Published var selectedInfos: [SelectedThreadInfo] = []
 

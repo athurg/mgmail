@@ -6,6 +6,7 @@ enum ActivityKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case list
     case message
     case modify
+    case send
     case label
     case attachment
     case auth
@@ -20,6 +21,7 @@ enum ActivityKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .list: return "邮件列表"
         case .message: return "邮件内容"
         case .modify: return "邮件操作"
+        case .send: return "发信"
         case .label: return "标签"
         case .attachment: return "附件"
         case .auth: return "授权"
@@ -34,6 +36,7 @@ enum ActivityKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .list: return "list.bullet"
         case .message: return "envelope"
         case .modify: return "pencil"
+        case .send: return "paperplane"
         case .label: return "tag"
         case .attachment: return "paperclip"
         case .auth: return "key"
