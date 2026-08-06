@@ -138,7 +138,6 @@ struct ThreadListView: View {
         rows.model = model
         rows.appState = appState
         rows.updateLabelMap(labelMap)
-        DragMonitor.shared.appState = appState
 
         let selection = Binding<Set<SelectedThread>>(
             get: { appState.selectedThreads },
@@ -154,17 +153,6 @@ struct ThreadListView: View {
             backfillFooter
         }
         .listStyle(.inset)
-        .onPreferenceChange(RowFramesKey.self) { frames in
-            ThreadRowCoordinator.shared.rowFrames = frames
-        }
-        // 拖拽层：覆盖在列表之上但对点击透明，把「拖出邮件」从行里彻底移走。
-        // 行上一旦挂拖拽 modifier，改选中就会在 NSTableView 的选择回调里重做注册（reentrant）。
-        .overlay {
-            ThreadDragLayer(
-                rowAt: { ThreadRowCoordinator.shared.row(at: $0) },
-                makePayload: { ThreadDragPayload.beginning($0) }
-            )
-        }
         // 浮动批量条：用 overlay 不占布局空间，避免出现/消失时列表位移
         .overlay(alignment: .bottom) { batchBar }
         // 按删除键：删除所有选中的会话
@@ -179,7 +167,7 @@ struct ThreadListView: View {
         }
     }
 
-    // MARK: - 单行（含拖出邮件 / 拖入标签）
+    // MARK: - 单行（可拖入标签）
 
     /// 列表行的身份：会话 key 再加上「这行有没有标签 chip」。
     ///
@@ -215,12 +203,6 @@ struct ThreadListView: View {
         )
         .tag(summary.key)
         .listRowBackground(dropRowBackground(summary))
-        // 上报位置给拖拽层做命中判断（纯几何，不注册任何 AppKit 东西）
-        .background(GeometryReader { geo in
-            // 用窗口全局坐标：拖拽层是 AppKit 视图，拿不到 SwiftUI 的具名坐标空间
-            Color.clear.preference(key: RowFramesKey.self,
-                                   value: [summary.key: geo.frame(in: .global)])
-        })
     }
 
     /// 可放置的行给浅色底，鼠标悬停其上时加深；非拖拽态返回 nil 以保留系统的选中高亮。

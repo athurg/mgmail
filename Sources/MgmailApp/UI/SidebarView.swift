@@ -10,7 +10,6 @@ struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
     @EnvironmentObject private var mailStore: MailStore
-    @ObservedObject private var drag = DragMonitor.shared
     /// 各账号是否有网络请求在飞，用于在账号条目上显示忙碌指示。
     @ObservedObject private var activity = NetworkActivity.shared
     @State private var expandedLabels: Set<String> = LabelExpansionStore.load()
@@ -55,18 +54,14 @@ struct SidebarView: View {
 
     @ViewBuilder
     private var fixedLabelsSection: some View {
-        // 拖动邮件时固定邮箱都不是放置目标，整体压暗，把注意力让给标签区
-        let dim = drag.isDraggingThreads ? 0.35 : 1
         Section("智能邮箱") {
             // 汇总当前分组的所有账号。只放收件箱和星标——已发送、草稿、垃圾邮件、
             // 废纸篓都是「针对某个账号」才有意义的，去下面各账号自己的分组里看。
             ForEach(StandardMailbox.smart) { box in
                 Label(box.name, systemImage: box.systemImage)
                     .tag(MailboxSelection(accountID: nil, labelID: box.id, labelName: box.name))
-                    .opacity(dim)
             }
         }
-        .animation(.easeOut(duration: 0.15), value: drag.isDraggingThreads)
     }
 
     // MARK: - 账号分组（账户 → 该账号的全部标签）
@@ -76,64 +71,40 @@ struct SidebarView: View {
         ForEach(appState.activeAccounts) { account in
             let tree = LabelTree.build(labelStore.userLabels(for: account.id))
             let categories = labelStore.categories(for: account.id)
-            let affinity = affinity(for: account.id)
             // 可折叠：点账号名（分组头）隐藏/展开该账号的标签列表。默认展开。
             Section(isExpanded: accountBinding(account.id)) {
-                // 拖邮件时固定邮箱与分类都不是放置目标，直接让位，免得把标签树挤到要滚动
-                if !drag.isDraggingThreads {
-                    // 该账号自己的固定邮箱：顶部是聚合视图，这里才能单看一个账号
-                    ForEach(StandardMailbox.all) { box in
-                        Label(box.name, systemImage: box.systemImage)
-                            .tag(MailboxSelection(accountID: account.id, labelID: box.id,
-                                                  labelName: "\(account.displayName) · \(box.name)"))
-                    }
-                    // 收件箱分类（主要/社交/推广…）：条目多且不常用，收进一个默认折叠的组
-                    if !categories.isEmpty {
-                        DisclosureGroup(isExpanded: groupBinding("cat:\(account.id)")) {
-                            ForEach(categories) { category in
-                                Label(category.name, systemImage: category.systemImage)
-                                    .tag(MailboxSelection(accountID: account.id, labelID: category.id,
-                                                          labelName: "\(account.displayName) · \(category.name)"))
-                            }
-                        } label: {
-                            Label("分类", systemImage: "square.grid.2x2")
+                // 该账号自己的固定邮箱：顶部是聚合视图，这里才能单看一个账号
+                ForEach(StandardMailbox.all) { box in
+                    Label(box.name, systemImage: box.systemImage)
+                        .tag(MailboxSelection(accountID: account.id, labelID: box.id,
+                                              labelName: "\(account.displayName) · \(box.name)"))
+                }
+                // 收件箱分类（主要/社交/推广…）：条目多且不常用，收进一个默认折叠的组
+                if !categories.isEmpty {
+                    DisclosureGroup(isExpanded: groupBinding("cat:\(account.id)")) {
+                        ForEach(categories) { category in
+                            Label(category.name, systemImage: category.systemImage)
+                                .tag(MailboxSelection(accountID: account.id, labelID: category.id,
+                                                      labelName: "\(account.displayName) · \(category.name)"))
                         }
+                    } label: {
+                        Label("分类", systemImage: "square.grid.2x2")
                     }
                 }
-                if tree.isEmpty {
-                    // 拖动中此时分组里空空如也，给个说明；平时有固定邮箱撑着就不用了
-                    if drag.isDraggingThreads {
-                        Text("无自定义标签").font(.caption).foregroundStyle(.secondary)
-                    }
-                } else {
-                    ForEach(tree) { node in
-                        LabelNodeView(node: node, accountID: account.id,
-                                      expanded: $expandedLabels, affinity: affinity)
-                    }
+                ForEach(tree) { node in
+                    LabelNodeView(node: node, accountID: account.id, expanded: $expandedLabels)
                 }
             } header: {
-                accountHeader(account).opacity(affinity.dimmed ? 0.35 : 1)
+                accountHeader(account)
             }
         }
-        .animation(.easeOut(duration: 0.15), value: drag.isDraggingThreads)
-    }
-
-    /// 拖动邮件时，某账号的标签区是「可放」还是「不可放」。
-    private func affinity(for accountID: String) -> DropAffinity {
-        guard drag.isDraggingThreads else { return .neutral }
-        return drag.draggingThreadsAccount == accountID ? .enabled : .disabled
     }
 
     /// 自定义标签分组的展开绑定（默认展开，记录“已折叠”）。
-    /// 拖动邮件时临时接管：只展开目标账号，其余折叠，且不写回持久化状态。
     private func accountBinding(_ id: String) -> Binding<Bool> {
         Binding(
-            get: {
-                if drag.isDraggingThreads { return drag.draggingThreadsAccount == id }
-                return !collapsedAccounts.contains(id)
-            },
+            get: { !collapsedAccounts.contains(id) },
             set: { isOpen in
-                guard !drag.isDraggingThreads else { return }
                 if isOpen { collapsedAccounts.remove(id) } else { collapsedAccounts.insert(id) }
                 LabelExpansionStore.saveCollapsed(collapsedAccounts)
             }
@@ -250,14 +221,7 @@ private struct LabelNodeView: View {
     let node: LabelNode
     let accountID: String
     @Binding var expanded: Set<String>
-    /// 拖动邮件时本账号标签区的可放置状态。
-    var affinity: DropAffinity = .neutral
     @EnvironmentObject private var appState: AppState
-    @EnvironmentObject private var mailStore: MailStore
-    @ObservedObject private var drag = DragMonitor.shared
-    /// 全局设置：按会话显示时对整个会话打标签，否则只对单封。
-    @AppStorage(SettingsKey.conversationView) private var conversationView = false
-    @State private var isDropTargeted = false
 
     var body: some View {
         if node.children.isEmpty {
@@ -265,8 +229,7 @@ private struct LabelNodeView: View {
         } else {
             DisclosureGroup(isExpanded: expandBinding) {
                 ForEach(node.children) { child in
-                    LabelNodeView(node: child, accountID: accountID,
-                                  expanded: $expanded, affinity: affinity)
+                    LabelNodeView(node: child, accountID: accountID, expanded: $expanded)
                 }
             } label: {
                 interactiveRow
@@ -274,59 +237,18 @@ private struct LabelNodeView: View {
         }
     }
 
-    /// 标签行 + 右键菜单 + 拖出自身 / 接收拖来的邮件。
+    /// 标签行 + 右键菜单 + 拖出自身（拖到邮件行上即给那封邮件打本标签）。
     @ViewBuilder
     private var interactiveRow: some View {
         let base = row.contextMenu { labelMenu }
         if let label = node.label {
             // 载荷表达式里只能出现值类型（见 DragMonitor 顶部说明）
-            let dragging = base.draggable(LabelDragPayload.beginning(
+            base.draggable(LabelDragPayload.beginning(
                 account: accountID, labelID: label.id, labelName: label.name))
-
-            switch affinity {
-            case .enabled:
-                dragging
-                    .onDrop(of: [.mgmailThreads], isTargeted: $isDropTargeted) { providers in
-                        accept(label, providers)
-                    }
-                    .background(isDropTargeted ? Color.accentColor.opacity(0.30)
-                                               : Color.accentColor.opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 5))
-            case .disabled:
-                dragging.opacity(0.35)
-            case .neutral:
-                dragging
-            }
         } else {
-            // 纯中间层没有真实标签，不能拖也不能放
-            base.opacity(affinity == .neutral ? 1 : 0.35)
+            // 纯中间层没有真实标签，不能拖
+            base
         }
-    }
-
-    /// 给拖来的邮件加上本标签：先改本地池子（列表立刻响应），再发请求。
-    private func accept(_ label: GmailLabel, _ providers: [NSItemProvider]) -> Bool {
-        DragMonitor.shared.end()
-        isDropTargeted = false
-        let conversation = conversationView
-        let account = accountID
-        Task {
-            guard let payload = await ThreadDragPayload.decode(from: providers),
-                  payload.accountIDs == [account] else { return }
-
-            let ids = payload.items.flatMap { item in
-                conversation
-                    ? mailStore.threadMessages(account: account, threadID: item.threadID).map(\.id)
-                    : [item.threadID]
-            }
-            mailStore.applyLabels(account: account, messageIDs: ids, add: [label.id], remove: [])
-
-            if let error = await MailActions.modify(payload.items, add: [label.id],
-                                                    conversation: conversation) {
-                appState.errorMessage = error
-                await mailStore.revalidate(account: account, messageIDs: ids)
-            }
-        }
-        return true
     }
 
     @ViewBuilder

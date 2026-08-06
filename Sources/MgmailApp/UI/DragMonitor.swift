@@ -14,39 +14,14 @@ final class DragMonitor: ObservableObject {
 
     @Published private(set) var active: DragContext?
 
-    /// 用于把单行拖拽扩展成「整组多选」。弱引用，由列表视图在布局时注入。
-    weak var appState: AppState?
-
     private var watcher: Task<Void, Never>?
 
     private init() {}
-
-    /// 正在拖动邮件（侧栏据此高亮/变灰各账号的标签）。
-    var isDraggingThreads: Bool {
-        if case .threads = active { return true }
-        return false
-    }
-
-    /// 正在拖动的邮件所属账号；跨账号多选时为 nil（此时任何标签都不可放）。
-    var draggingThreadsAccount: String? {
-        guard case .threads(let items) = active else { return nil }
-        let accounts = Set(items.map(\.accountID))
-        return accounts.count == 1 ? accounts.first : nil
-    }
 
     /// 正在拖动的标签所属账号（列表据此高亮/变灰各行）。
     var draggingLabelAccount: String? {
         guard case .label(let accountID, _, _) = active else { return nil }
         return accountID
-    }
-
-    /// 开始拖动列表里的某一行：若它属于当前多选，则整组一起带走。
-    @discardableResult
-    func beginThreads(from key: SelectedThread) -> [SelectedThread] {
-        let selection = appState?.selectedThreads ?? []
-        let items = (selection.count > 1 && selection.contains(key)) ? Array(selection) : [key]
-        begin(.threads(items))
-        return items
     }
 
     /// 记录拖拽开始。
@@ -70,15 +45,6 @@ final class DragMonitor: ObservableObject {
         watcher?.cancel()
         watcher = nil
         active = nil
-    }
-}
-
-@MainActor
-extension ThreadDragPayload {
-    /// 拖拽开始时构造载荷，顺带记录拖拽上下文。
-    /// 只接收值类型参数——见 `DragMonitor` 顶部关于 autoclosure 捕获的说明。
-    static func beginning(_ key: SelectedThread) -> ThreadDragPayload {
-        ThreadDragPayload(items: DragMonitor.shared.beginThreads(from: key))
     }
 }
 

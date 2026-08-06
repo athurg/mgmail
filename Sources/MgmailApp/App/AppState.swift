@@ -329,8 +329,6 @@ struct SyncRequest: Equatable {
 
 /// 应用内拖拽的上下文，用于放置目标提前判断兼容性。
 enum DragContext: Equatable {
-    /// 从列表拖出的会话/邮件（多选时为整组，可能跨账号）。
-    case threads([SelectedThread])
     /// 从侧栏拖出的一个标签。
     case label(accountID: String, labelID: String, name: String)
 }
