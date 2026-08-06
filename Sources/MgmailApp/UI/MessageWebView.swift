@@ -3,25 +3,36 @@ import WebKit
 
 /// 编译并缓存「阻止远程内容」的规则列表（仿 Mail 的默认拦截跟踪像素）。
 /// 只拦截 http(s) 资源，保留 data: 内联图片。
-actor RemoteContentBlocker {
+///
+/// 跟着 WebKit 待在主线程上：`WKContentRuleListStore` 整套都是主线程隔离的。
+@MainActor
+final class RemoteContentBlocker {
     static let shared = RemoteContentBlocker()
-    private var cached: WKContentRuleList?
 
-    private let ruleJSON = """
+    /// 缓存的是「编译这件事」而不是编译结果。
+    ///
+    /// 缓存结果的话，切换邮件时几封正文同时来要规则，都会看到「还没有」而各编一遍——
+    /// await 之间是可以被插进来的，`@MainActor` 挡不住这种重入。
+    /// 存下任务就只会编译一次，后来的都在同一个任务上等。
+    private var compilation: Task<WKContentRuleList?, Never>?
+
+    private static let ruleJSON = """
     [{"trigger":{"url-filter":"^https?://","resource-type":["image","style-sheet","script","font","media","raw","svg-document"]},"action":{"type":"block"}}]
     """
 
     func ruleList() async -> WKContentRuleList? {
-        if let cached { return cached }
-        let store = WKContentRuleListStore.default()
-        let json = ruleJSON
-        let list: WKContentRuleList? = await withCheckedContinuation { cont in
-            store?.compileContentRuleList(forIdentifier: "block-remote", encodedContentRuleList: json) { list, _ in
-                cont.resume(returning: list)
+        if let compilation { return await compilation.value }
+        let task = Task { @MainActor () -> WKContentRuleList? in
+            guard let store = WKContentRuleListStore.default() else { return nil }
+            return await withCheckedContinuation { cont in
+                store.compileContentRuleList(forIdentifier: "block-remote",
+                                             encodedContentRuleList: Self.ruleJSON) { list, _ in
+                    cont.resume(returning: list)
+                }
             }
         }
-        cached = list
-        return list
+        compilation = task
+        return await task.value
     }
 }
 
