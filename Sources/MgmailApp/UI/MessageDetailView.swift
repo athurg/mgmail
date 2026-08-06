@@ -5,6 +5,7 @@ import AppKit
 struct MessageDetailView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var mailStore: MailStore
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var model = MessageDetailModel()
     @State private var showLabelPopover = false
     @State private var actionError: String?
@@ -67,6 +68,22 @@ struct MessageDetailView: View {
     private var toolbarItems: some ToolbarContent {
         ToolbarItem {
             ControlGroup {
+                Button { compose(.reply(all: false)) } label: {
+                    Image(systemName: "arrowshape.turn.up.left")
+                }.help("回复（⌘R）").keyboardShortcut("r", modifiers: .command)
+
+                Button { compose(.reply(all: true)) } label: {
+                    Image(systemName: "arrowshape.turn.up.left.2")
+                }.help("全部回复（⇧⌘R）").keyboardShortcut("r", modifiers: [.command, .shift])
+
+                Button { compose(.forward) } label: {
+                    Image(systemName: "arrowshape.turn.up.right")
+                }.help("转发（⇧⌘F）").keyboardShortcut("f", modifiers: [.command, .shift])
+            }
+        }
+
+        ToolbarItem {
+            ControlGroup {
                 Button {
                     run { try await model.archive() }
                 } label: {
@@ -102,6 +119,31 @@ struct MessageDetailView: View {
                                 onClose: { showLabelPopover = false })
             }
         }
+    }
+
+    /// 开一个撰写窗口回复或转发。
+    ///
+    /// 回复的是会话里**最后一封**：一串会话里用户想接的总是最新的那条，
+    /// 而不是最早那条。转发同理。
+    private func compose(_ kind: ComposeKind) {
+        guard let message = model.messages.last,
+              let selected = appState.singleSelection,
+              let account = appState.activeAccounts.first(where: { $0.id == selected.accountID })
+        else { return }
+
+        let id: UUID
+        switch kind {
+        case .reply(let all):
+            id = ComposeStore.shared.reply(to: message, account: account,
+                                           threadID: selected.threadID, all: all,
+                                           quotedBody: MailQuote.reply(to: message))
+        case .forward:
+            id = ComposeStore.shared.forward(message, account: account,
+                                             quotedBody: MailQuote.forward(message))
+        case .new:
+            id = ComposeStore.shared.newMail(from: account)
+        }
+        openWindow(id: ComposeWindow.id, value: id)
     }
 
     /// 删除交给中栏列表执行：它会把行移除并自动选中下一封。

@@ -93,6 +93,11 @@ struct EmailAddress {
     let name: String
     let email: String
 
+    init(name: String, email: String) {
+        self.name = name
+        self.email = email
+    }
+
     /// 解析形如 `"张三" <a@b.com>` 或 `a@b.com`。
     init(header: String) {
         let trimmed = header.trimmingCharacters(in: .whitespaces)
