@@ -14,23 +14,36 @@ struct MessageDetailView: View {
     @State private var expansionBasis: Set<String> = []
     /// 全局设置：是否按会话显示邮件。关闭时右栏只展示选中的那一封。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
+    /// 叠加卡片是否在场。多选一开就为 true；退出多选时不立刻撤，
+    /// 等卡片飞回列表再由 `onLeaveFinished` 关掉。
+    @State private var stackVisible = false
 
     var body: some View {
-        Group {
-            if appState.selectedThreads.isEmpty {
-                ContentUnavailableView("未选择邮件", systemImage: "envelope")
-            } else if appState.selectedThreads.count > 1 {
-                StackedSelectionView(infos: appState.selectedInfos, total: appState.selectedThreads.count)
-            } else if let error = model.loadError, model.messages.isEmpty {
-                ContentUnavailableView {
-                    Label("加载失败", systemImage: "exclamationmark.triangle")
-                } description: { Text(error) }
-            } else if model.isLoading && model.messages.isEmpty {
-                ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                content
+        // 叠加卡片盖在单选内容之上，而不是跟它二选一：退出多选时卡片要一边飞回
+        // 列表，正文一边在底下淡进来，两者得同时在场。
+        //
+        // 容器必须是 ZStack 这样的实体容器，不能用 Group——Group 是透明的，
+        // 加在它上面的 .animation 会被分发给每个分支各自持有，分支之间切换时
+        // 拿不到动画，卡片的退场转场根本不会播。
+        ZStack {
+            Color.clear
+            if !isMultiSelection {
+                singleContent
+            }
+            if stackVisible {
+                StackedSelectionView(
+                    infos: appState.selectedInfos,
+                    total: appState.selectedThreads.count,
+                    isLeaving: !isMultiSelection,
+                    onLeaveFinished: { if !isMultiSelection { stackVisible = false } }
+                )
             }
         }
+        // 只认「是不是多选」：单选之间来回切不该被卷进转场（正文是 WebView，淡入淡出会闪）。
+        .animation(.easeInOut(duration: 0.3), value: isMultiSelection)
+        .onAppear { stackVisible = isMultiSelection }
+        // 退出多选时不在这儿撤掉卡片：先让它们飞回列表，飞完了才由回调关掉。
+        .onChange(of: isMultiSelection) { _, multi in if multi { stackVisible = true } }
         .toolbar { if appState.singleSelection != nil && !model.messages.isEmpty { toolbarItems } }
         .alert("操作失败", isPresented: Binding(
             get: { actionError != nil }, set: { if !$0 { actionError = nil } }
@@ -107,6 +120,24 @@ struct MessageDetailView: View {
             } catch {
                 actionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
+        }
+    }
+
+    private var isMultiSelection: Bool { appState.selectedThreads.count > 1 }
+
+    /// 非多选时右栏的内容：空状态、加载失败、加载中、正文。
+    @ViewBuilder
+    private var singleContent: some View {
+        if appState.selectedThreads.isEmpty {
+            ContentUnavailableView("未选择邮件", systemImage: "envelope")
+        } else if let error = model.loadError, model.messages.isEmpty {
+            ContentUnavailableView {
+                Label("加载失败", systemImage: "exclamationmark.triangle")
+            } description: { Text(error) }
+        } else if model.isLoading && model.messages.isEmpty {
+            ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            content
         }
     }
 
