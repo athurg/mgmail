@@ -112,6 +112,8 @@ final class NewMailNotifier {
                                              threadID: message.threadId).userInfo
         // 同一个账号的通知在通知中心里归成一组
         content.threadIdentifier = account
+        // 挂上分类，横幅上才有已读/归档/删除那几个按钮
+        content.categoryIdentifier = NotificationAction.categoryID
         if NotifyPolicy.sound { content.sound = .default }
         submit(content, id: "mail.\(account).\(message.id)")
     }
