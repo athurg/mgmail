@@ -144,6 +144,9 @@ struct RootView: View {
             NewMailNotifier.shared.accountName = { [weak appState] email in
                 appState?.accounts.first { $0.id == email }?.displayName ?? email
             }
+            // 通知里的快捷操作要改本地池子。它可能在主窗口关着的时候触发，
+            // 但池子活在 App 上，注入一次就一直有效。
+            NotificationActionHandler.shared.store = mailStore
             sync.start(accounts: { appState.accounts.map(\.id) }) { account in
                 await MailRefresh.account(account, labels: labelStore, mail: mailStore, colors: false)
             }

@@ -15,10 +15,12 @@ final class NotificationRouter: NSObject, ObservableObject, UNUserNotificationCe
 
     private override init() { super.init() }
 
-    /// 挂上通知中心的代理。必须在应用启动早期调用，否则冷启动时点通知会丢。
+    /// 挂上通知中心的代理，并注册带快捷操作的通知分类。
+    /// 必须在应用启动早期调用，否则冷启动时点通知会丢。
     func install() {
         guard NotificationPermission.isAvailable else { return }
         UNUserNotificationCenter.current().delegate = self
+        NotificationAction.registerCategory()
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -41,10 +43,16 @@ final class NotificationRouter: NSObject, ObservableObject, UNUserNotificationCe
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        let isDefaultAction = response.actionIdentifier == UNNotificationDefaultActionIdentifier
+        let identifier = response.actionIdentifier
         Task { @MainActor in
             defer { completionHandler() }
-            guard isDefaultAction, let route = NotificationRoute(userInfo: userInfo) else { return }
+            guard let route = NotificationRoute(userInfo: userInfo) else { return }
+            // 快捷操作：就地处理掉，不把应用叫到前台——不打断人正是这几个按钮的意义
+            if let action = NotificationAction(rawValue: identifier) {
+                await NotificationActionHandler.shared.perform(action, route: route)
+                return
+            }
+            guard identifier == UNNotificationDefaultActionIdentifier else { return }
             self.pending = route
             Self.bringToFront()
         }
