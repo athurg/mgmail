@@ -5,6 +5,7 @@ struct ThreadListView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
     @EnvironmentObject private var mailStore: MailStore
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var model = ThreadListModel()
     /// 全局设置：是否按会话显示邮件。默认关闭（每行一封独立邮件）。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
@@ -110,6 +111,13 @@ struct ThreadListView: View {
         .onChange(of: appState.trashRequest) { _, request in
             guard let request else { return }
             rows.performTrash([SelectedThread(accountID: request.account, threadID: request.id)])
+        }
+        // 双击某一行：开一扇独立窗口。同一封邮件再双击时，SwiftUI 认窗口值，
+        // 会把已经开着的那扇拿到前台，而不是叠一扇新的。
+        .onChange(of: appState.detachRequest) { _, request in
+            guard let request else { return }
+            openWindow(id: MessageWindow.id,
+                       value: SelectedThread(accountID: request.account, threadID: request.id))
         }
         .onChange(of: appState.selectedThreads) { _, sel in
             // 同步选中项摘要（供右栏多选叠加卡片），保持列表顺序。
@@ -352,6 +360,10 @@ private struct ThreadListRow: View {
 
     @ViewBuilder
     var body: some View {
+        // 先把 key 取成局部常量：手势闭包里写 `summary.key` 会连整个 self 一起捕获，
+        // 于是打标签这类内容变化也让 SwiftUI 判定手势变了、重新注册一次 ——
+        // 那发生在 NSTableView 的回调里就是重入。只捕获这个值类型，行内容怎么变都与它无关。
+        let key = summary.key
         let base = ThreadRow(summary: summary, labelMap: labelMap,
                   accountBadge: accountBadge, avatarReloadToken: avatarReloadToken)
             .contextMenu { menu }
@@ -360,6 +372,17 @@ private struct ThreadListRow: View {
             .swipeActions(edge: .trailing, allowsFullSwipe: true) { trailingSwipe }
             .opacity(affinity.dimmed ? 0.35 : 1)
             .animation(.easeOut(duration: 0.15), value: affinity.dimmed)
+            // 双击：把这一封拎到独立窗口里看。
+            //
+            // 用 simultaneousGesture 而不是 onTapGesture：后者会把点击吃掉，
+            // List 收不到就选不中行了。并列上去两边都收得到——单击照常选中，
+            // 第二下落进来才开窗。
+            //
+            // 闭包里走静态单例而不是 `rows`：`rows` 是计算属性，写它等于捕获 self，
+            // 于是行内容一变 SwiftUI 就判定手势变了、在 NSTableView 的回调里重新注册它。
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                ThreadRowCoordinator.shared.openInWindow(key)
+            })
 
         // 放置区只在真的拖着标签时才挂。onDrop 的闭包无法被 SwiftUI 判定为「没变」，
         // 常挂着会让每次改选中都重新注册一次放置区 —— 那正是 NSTableView 重入的来源。
@@ -400,6 +423,9 @@ private struct ThreadListRow: View {
     private var menu: some View {
         let n = rows.targets(summary).count
         let suffix = n > 1 ? "（\(n) 封）" : ""
+        // 双击是这个功能的主入口，但双击本身看不见，菜单里得留个能被发现的说法
+        Button("在新窗口中打开") { rows.openInWindow(summary.key) }
+        Divider()
         Button((summary.isUnread ? "标记为已读" : "标记为未读") + suffix) { rows.toggleUnread(summary) }
         Button((summary.isStarred ? "取消旗标" : "旗标") + suffix) { rows.toggleStar(summary) }
         if isArchivable {
