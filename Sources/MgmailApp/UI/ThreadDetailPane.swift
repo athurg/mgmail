@@ -110,32 +110,10 @@ struct ThreadDetailPane: View {
         }
     }
 
-    /// 开一个撰写窗口回复或转发。
-    ///
-    /// 回复的是会话里**最后一封**：一串会话里用户想接的总是最新的那条，
-    /// 而不是最早那条。转发同理。
-    ///
-    /// 发件人按正在看的这封邮件所属账号找，而且是在**全部**账号里找——
-    /// 独立窗口可能在切换分组之后还开着，那时它的账号已经不在当前分组里了。
+    /// 开一个撰写窗口回复或转发。规则见 `MessageComposeAction`（独立窗口用的是同一套）。
     private func compose(_ kind: ComposeKind) {
-        guard let message = model.messages.last,
-              let accountID = model.account, let threadID = model.threadID,
-              let account = appState.accounts.first(where: { $0.id == accountID })
-        else { return }
-
-        let id: UUID
-        switch kind {
-        case .reply(let all):
-            id = ComposeStore.shared.reply(to: message, account: account,
-                                           threadID: threadID, all: all,
-                                           quotedBody: MailQuote.reply(to: message))
-        case .forward:
-            id = ComposeStore.shared.forward(message, account: account,
-                                             sourceAccount: accountID,
-                                             quotedBody: MailQuote.forward(message))
-        case .new:
-            id = ComposeStore.shared.newMail(from: account)
-        }
+        guard let id = MessageComposeAction.windowValue(kind, model: model,
+                                                        accounts: appState.accounts) else { return }
         openWindow(id: ComposeWindow.id, value: id)
     }
 
