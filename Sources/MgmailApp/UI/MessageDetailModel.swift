@@ -210,6 +210,28 @@ final class MessageDetailModel: ObservableObject {
         try await modify(remove: ["INBOX"])
     }
 
+    /// 移入废纸篓。
+    ///
+    /// 独立阅读窗口用的是这条路，不像主窗口右栏那样把删除交给中栏列表——
+    /// 那扇窗可能在主窗口关着的时候还开着，没人接的话删除就悄悄丢了。
+    /// 代价是不会自动选中下一封，但删的时候用户眼睛在独立窗口上，列表选谁不打紧。
+    func trash() async throws {
+        guard let account, let threadID, let store else { return }
+        let ids = messageIDs
+        store.applyTrash(account: account, messageIDs: ids)
+        do {
+            let api = GmailAPI(account: account)
+            if conversation {
+                try await api.trashThread(id: threadID)
+            } else {
+                try await api.trashMessage(id: threadID)
+            }
+        } catch {
+            await store.revalidate(account: account, messageIDs: ids)
+            throw error
+        }
+    }
+
     /// 打开会话时若未读则自动标记为已读。
     func markReadOnOpenIfNeeded() async {
         guard isUnread else { return }
