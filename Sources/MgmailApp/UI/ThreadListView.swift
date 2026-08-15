@@ -201,7 +201,7 @@ struct ThreadListView: View {
             avatarReloadToken: appState.avatarReloadToken,
             affinity: rows.labelDropAffinity(summary),
             isDropTarget: rows.dropTargetKey == summary.key,
-            isArchivable: isArchivable
+            placement: rows.placement(summary)
         )
         // 登记这一行的位置：多选叠加卡片要从这儿起飞、飞回这儿来
         .background(ThreadRowFrameReporter(key: summary.key))
@@ -292,11 +292,19 @@ struct ThreadListView: View {
     private var batchBar: some View {
         if appState.selectedThreads.count >= 2 {
             let sel = Array(appState.selectedThreads)
+            let placements = selectionPlacements
             HStack(spacing: 14) {
                 Text("已选 \(sel.count) 封").font(.callout).foregroundStyle(.secondary)
-                Button { rows.performTrash(sel) } label: { Image(systemName: "trash") }.help("删除所选")
-                if isArchivable {
+                if placements.contains(where: \.canTrash) {
+                    Button { rows.performTrash(sel) } label: { Image(systemName: "trash") }.help("删除所选")
+                }
+                if placements.contains(where: \.canArchive) {
                     Button { rows.performArchive(sel) } label: { Image(systemName: "archivebox") }.help("归档所选")
+                }
+                if placements.contains(where: \.canMoveToInbox) {
+                    Button { rows.performMoveToInbox(sel) } label: {
+                        Image(systemName: "tray.and.arrow.down")
+                    }.help("把所选移回收件箱")
                 }
                 Button { rows.markRead(sel) } label: {
                     Image(systemName: "envelope.open")
@@ -320,8 +328,16 @@ struct ThreadListView: View {
 
     // MARK: - 行操作
 
-    /// 当前邮箱是否支持“归档”（仅收件箱有意义）。
-    private var isArchivable: Bool { appState.selection?.labelID == "INBOX" }
+    /// 当前选中的这几封分别处在哪一态。
+    ///
+    /// 多选可以横跨三态（尤其在「所有邮件」里），所以批量条按并集摆按钮：
+    /// 有一封还能删就摆删除，有一封还能归档就摆归档——按下去只作用于对得上的那部分，
+    /// 筛选在 `ThreadRowCoordinator` 里做。
+    private var selectionPlacements: Set<MailPlacement> {
+        let selected = appState.selectedThreads
+        return Set(model.summaries.filter { selected.contains($0.key) }
+            .map { MailPlacement(labels: $0.labelIds) })
+    }
 
     /// 聚合视图（accountID 为 nil）时给每行一个来源账号徽标。
     private func badge(for summary: ThreadSummary) -> Account? {
@@ -356,7 +372,8 @@ private struct ThreadListRow: View {
     let avatarReloadToken: Int
     let affinity: DropAffinity
     let isDropTarget: Bool
-    let isArchivable: Bool
+    /// 这一行在收件箱、归档，还是废纸篓——滑动和右键里摆哪几个动作全看它。
+    let placement: MailPlacement
 
     /// 静态访问，不作为字段存起来：字段里一旦有引用，行上的 modifier 就无法被判定为「没变」。
     private var rows: ThreadRowCoordinator { .shared }
@@ -397,14 +414,16 @@ private struct ThreadListRow: View {
 
     @ViewBuilder
     private var trailingSwipe: some View {
-        Button(role: .destructive) { rows.trash(summary) } label: {
-            Image(systemName: "trash")
+        if placement.canTrash {
+            Button(role: .destructive) { rows.trash(summary) } label: {
+                Image(systemName: "trash")
+            }
         }
-        if isArchivable {
-            Button { rows.archive(summary) } label: {
-                Image(systemName: "archivebox")
-            }.tint(.blue)
-        }
+        Button {
+            if placement.canArchive { rows.archive(summary) } else { rows.moveToInbox(summary) }
+        } label: {
+            Image(systemName: placement.moveIcon)
+        }.tint(.blue)
     }
 
     @ViewBuilder
@@ -416,12 +435,14 @@ private struct ThreadListRow: View {
         Divider()
         Button((summary.isUnread ? "标记为已读" : "标记为未读") + suffix) { rows.toggleUnread(summary) }
         Button((summary.isStarred ? "取消旗标" : "旗标") + suffix) { rows.toggleStar(summary) }
-        if isArchivable {
-            Button("归档" + suffix) { rows.archive(summary) }
+        Button(placement.moveTitle + suffix) {
+            if placement.canArchive { rows.archive(summary) } else { rows.moveToInbox(summary) }
         }
         labelSubmenu(suffix)
-        Divider()
-        Button("删除" + suffix, role: .destructive) { rows.trash(summary) }
+        if placement.canTrash {
+            Divider()
+            Button("删除" + suffix, role: .destructive) { rows.trash(summary) }
+        }
     }
 
     /// 右键里的标签子菜单：勾选即加、取消即去，一次一个请求。

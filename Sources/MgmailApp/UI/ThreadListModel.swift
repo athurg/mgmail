@@ -196,6 +196,26 @@ final class ThreadListModel: ObservableObject {
         return store.message(account: key.accountID, id: key.threadID) == nil ? [] : [key.threadID]
     }
 
+    /// 这一行现在在收件箱、归档，还是废纸篓。
+    func placement(of key: SelectedThread) -> MailPlacement {
+        guard let store else { return .archived }
+        return MailPlacement(labels: store.labels(account: key.accountID, threadID: key.threadID,
+                                                  conversation: conversation))
+    }
+
+    /// 这一行按这组标签改完之后，还留在当前邮箱里吗。
+    ///
+    /// 用来决定归档/移回收件箱要不要顺手选中下一封：在「所有邮件」里这两个操作并不会
+    /// 把行拿走，那时候还去动选择，用户只会觉得莫名其妙跳走了一封。
+    func remainsVisible(_ key: SelectedThread, add: [String] = [], remove: [String] = []) -> Bool {
+        guard let store else { return false }
+        var labels = store.labels(account: key.accountID, threadID: key.threadID,
+                                  conversation: conversation)
+        labels.formUnion(add)
+        labels.subtract(remove)
+        return boxQuery.labelsBelong(Array(labels))
+    }
+
     // MARK: - 操作（本地先改，再发请求；失败才回头问服务器）
 
     /// 批量增删标签（归档 = 去 INBOX；已读 = 去 UNREAD；旗标 = 加 STARRED）。
@@ -259,6 +279,55 @@ final class ThreadListModel: ObservableObject {
 
         guard !failures.isEmpty else { return }
         loadError = "部分邮件删除失败"
+        for account in Set(failures) {
+            await store.revalidate(account: account, messageIDs: affected[account] ?? [])
+        }
+    }
+
+    /// 放回收件箱（归档的、以及废纸篓里的）。
+    ///
+    /// 废纸篓那部分得先 `untrash` 再 `modify`，理由见 `MessageDetailModel.moveToInbox`。
+    func moveToInboxMany(_ keys: [SelectedThread]) async {
+        guard let store, !keys.isEmpty else { return }
+        var affected: [String: [String]] = [:]
+        var trashed: Set<SelectedThread> = []
+        for key in keys {
+            let ids = messageIDs(for: key)
+            guard !ids.isEmpty else { continue }
+            if placement(of: key) == .trashed { trashed.insert(key) } // 本地一改就看不出来了
+            store.applyMoveToInbox(account: key.accountID, messageIDs: ids)
+            affected[key.accountID, default: []] += ids
+        }
+
+        let byConversation = conversation
+        let failures = await withTaskGroup(of: String?.self) { group -> [String] in
+            for key in keys {
+                let wasTrashed = trashed.contains(key)
+                group.addTask {
+                    let api = GmailAPI(account: key.accountID)
+                    do {
+                        if byConversation {
+                            if wasTrashed { try await api.untrashThread(id: key.threadID) }
+                            try await api.modifyThread(id: key.threadID, add: MailPlacement.inboxAdd,
+                                                       remove: MailPlacement.inboxRemove)
+                        } else {
+                            if wasTrashed { try await api.untrashMessage(id: key.threadID) }
+                            try await api.modifyMessage(id: key.threadID, add: MailPlacement.inboxAdd,
+                                                        remove: MailPlacement.inboxRemove)
+                        }
+                        return nil
+                    } catch {
+                        return key.accountID
+                    }
+                }
+            }
+            var out: [String] = []
+            for await failed in group { if let failed { out.append(failed) } }
+            return out
+        }
+
+        guard !failures.isEmpty else { return }
+        loadError = "部分邮件没能移回收件箱"
         for account in Set(failures) {
             await store.revalidate(account: account, messageIDs: affected[account] ?? [])
         }

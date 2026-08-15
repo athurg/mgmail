@@ -51,7 +51,7 @@ struct ThreadDetailPane: View {
         .onChange(of: model.messages.map(\.id), initial: true) { _, _ in applyDefaultExpansion() }
     }
 
-    /// 工具栏分两组：① 邮件操作（归档、已读未读、星标、删除）② 标签。
+    /// 工具栏分两组：① 邮件操作（归档/移回收件箱、已读未读、星标、删除）② 标签。
     /// 用 ControlGroup 让组内按钮连成一体，组与组之间才有明显的间隔。
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
@@ -73,11 +73,17 @@ struct ThreadDetailPane: View {
 
         ToolbarItem {
             ControlGroup {
+                // 归档和移回收件箱是同一个按钮的两副面孔：邮件已经不在收件箱了，
+                // 「归档」就没有意义，那个位置该换成把它送回去。
                 Button {
-                    run { try await model.archive() }
+                    let placement = model.placement
+                    run {
+                        if placement.canArchive { try await model.archive() }
+                        else { try await model.moveToInbox() }
+                    }
                 } label: {
-                    Image(systemName: "archivebox")
-                }.help("归档（移出收件箱）").disabled(!model.isInInbox)
+                    Image(systemName: model.placement.moveIcon)
+                }.help(model.placement.moveHelp)
 
                 Button {
                     let unread = !model.isUnread
@@ -93,9 +99,12 @@ struct ThreadDetailPane: View {
                         .foregroundStyle(model.isStarred ? .yellow : .secondary)
                 }.help(model.isStarred ? "取消星标" : "加星标")
 
-                Button(role: .destructive) { onTrash() } label: {
-                    Image(systemName: "trash")
-                }.help("删除（移入废纸篓）")
+                // 已经在废纸篓里的就不摆删除了：再删一次只能是永久删除，这个应用不做。
+                if model.placement.canTrash {
+                    Button(role: .destructive) { onTrash() } label: {
+                        Image(systemName: "trash")
+                    }.help("删除（移入废纸篓）")
+                }
             }
         }
 

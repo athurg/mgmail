@@ -67,7 +67,13 @@ final class ThreadRowCoordinator: ObservableObject {
     }
 
     func archive(_ summary: ThreadSummary) { performArchive(targets(summary)) }
+    func moveToInbox(_ summary: ThreadSummary) { performMoveToInbox(targets(summary)) }
     func trash(_ summary: ThreadSummary) { performTrash(targets(summary)) }
+
+    /// 这一行现在在收件箱、归档，还是废纸篓——决定行上摆哪几个动作。
+    func placement(_ summary: ThreadSummary) -> MailPlacement {
+        MailPlacement(labels: summary.labelIds)
+    }
 
     /// 双击（或右键「在新窗口中打开」）：把这一行拎到独立窗口里。
     ///
@@ -86,17 +92,38 @@ final class ThreadRowCoordinator: ObservableObject {
     }
 
     // MARK: - 批量执行（含删除/归档后自动选中下一封）
+    //
+    // 三个动作都先按邮件当前的状态筛一遍：多选里混着收件箱、归档和废纸篓里的邮件时，
+    // 每个按钮只作用于它说得通的那部分——不会去删已经在废纸篓里的（那是永久删除），
+    // 也不会去归档一封根本不在收件箱的。
 
     func performTrash(_ keys: [SelectedThread]) {
-        let advance = advanceSelectionIfNeeded(removing: keys)
-        Task { await model.trashMany(keys) }
-        applyAdvance(advance, removed: keys)
+        let targets = keys.filter { model.placement(of: $0).canTrash }
+        guard !targets.isEmpty else { return }
+        let advance = advanceSelectionIfNeeded(removing: targets)
+        Task { await model.trashMany(targets) }
+        applyAdvance(advance, removed: targets)
     }
 
     func performArchive(_ keys: [SelectedThread]) {
-        let advance = advanceSelectionIfNeeded(removing: keys)
-        Task { await model.mutateMany(keys, remove: ["INBOX"]) }
-        applyAdvance(advance, removed: keys)
+        let targets = keys.filter { model.placement(of: $0).canArchive }
+        guard !targets.isEmpty else { return }
+        let leaving = targets.filter { !model.remainsVisible($0, remove: ["INBOX"]) }
+        let advance = advanceSelectionIfNeeded(removing: leaving)
+        Task { await model.mutateMany(targets, remove: ["INBOX"]) }
+        applyAdvance(advance, removed: leaving)
+    }
+
+    func performMoveToInbox(_ keys: [SelectedThread]) {
+        let targets = keys.filter { model.placement(of: $0).canMoveToInbox }
+        guard !targets.isEmpty else { return }
+        let leaving = targets.filter {
+            !model.remainsVisible($0, add: MailPlacement.inboxAdd,
+                                  remove: MailPlacement.inboxRemove + ["TRASH"])
+        }
+        let advance = advanceSelectionIfNeeded(removing: leaving)
+        Task { await model.moveToInboxMany(targets) }
+        applyAdvance(advance, removed: leaving)
     }
 
     func markRead(_ keys: [SelectedThread]) {
