@@ -2,17 +2,13 @@ import SwiftUI
 import AppKit
 
 /// 右栏：会话/邮件详情。
+///
+/// 正文和工具栏都在 `ThreadDetailPane` 里（独立窗口用的是同一个），
+/// 这里只管主窗口特有的部分：跟着中栏选择走、多选时的叠加卡片、删除交给列表执行。
 struct MessageDetailView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var mailStore: MailStore
-    @Environment(\.openWindow) private var openWindow
     @StateObject private var model = MessageDetailModel()
-    @State private var showLabelPopover = false
-    @State private var actionError: String?
-    /// 当前展开的邮件 id 集合（会话里其余邮件折叠）。
-    @State private var expanded: Set<String> = []
-    /// 上次据以计算默认展开的消息 id 集合；用于避免联网刷新后重复重置、覆盖用户手动展开。
-    @State private var expansionBasis: Set<String> = []
     /// 全局设置：是否按会话显示邮件。关闭时右栏只展示选中的那一封。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
     /// 叠加卡片是否在场。多选一开就为 true；退出多选时不立刻撤，
@@ -45,125 +41,20 @@ struct MessageDetailView: View {
         .onAppear { stackVisible = isMultiSelection }
         // 退出多选时不在这儿撤掉卡片：先让它们飞回列表，飞完了才由回调关掉。
         .onChange(of: isMultiSelection) { _, multi in if multi { stackVisible = true } }
-        .toolbar { if appState.singleSelection != nil && !model.messages.isEmpty { toolbarItems } }
-        .alert("操作失败", isPresented: Binding(
-            get: { actionError != nil }, set: { if !$0 { actionError = nil } }
-        )) { Button("好", role: .cancel) {} } message: { Text(actionError ?? "") }
         .task(id: taskKey) { await reload() }
         // 池子里这串会话多了邮件（同步拿回来的新回复）才需要重取正文。
         // 必须连 threadID 一起比：只比条数的话，从一封单邮件切到一串多邮件会话
         // 也会被当成「来了新回复」，于是每次切回来都白拉一遍整串正文和内联图。
         .onChange(of: threadMessageCount) { old, new in
             guard old.threadID == new.threadID, old.count > 0, new.count > old.count else { return }
-            Task {
-                await model.reloadBody()
-                applyDefaultExpansion()
-            }
+            Task { await model.reloadBody() }
         }
-    }
-
-    /// 工具栏分两组：① 邮件操作（归档、已读未读、星标、删除）② 标签。
-    /// 用 ControlGroup 让组内按钮连成一体，组与组之间才有明显的间隔。
-    @ToolbarContentBuilder
-    private var toolbarItems: some ToolbarContent {
-        ToolbarItem {
-            ControlGroup {
-                Button { compose(.reply(all: false)) } label: {
-                    Image(systemName: "arrowshape.turn.up.left")
-                }.help("回复（⌘R）").keyboardShortcut("r", modifiers: .command)
-
-                Button { compose(.reply(all: true)) } label: {
-                    Image(systemName: "arrowshape.turn.up.left.2")
-                }.help("全部回复（⇧⌘R）").keyboardShortcut("r", modifiers: [.command, .shift])
-
-                Button { compose(.forward) } label: {
-                    Image(systemName: "arrowshape.turn.up.right")
-                }.help("转发（⇧⌘F）").keyboardShortcut("f", modifiers: [.command, .shift])
-            }
-        }
-
-        ToolbarItem {
-            ControlGroup {
-                Button {
-                    run { try await model.archive() }
-                } label: {
-                    Image(systemName: "archivebox")
-                }.help("归档（移出收件箱）").disabled(!model.isInInbox)
-
-                Button {
-                    let unread = !model.isUnread
-                    run { try await model.setUnread(unread) }
-                } label: {
-                    Image(systemName: model.isUnread ? "envelope.badge" : "envelope.open")
-                }.help(model.isUnread ? "标记为已读" : "标记为未读")
-
-                Button {
-                    run { try await model.toggleStar() }
-                } label: {
-                    Image(systemName: model.isStarred ? "star.fill" : "star")
-                        .foregroundStyle(model.isStarred ? .yellow : .secondary)
-                }.help(model.isStarred ? "取消星标" : "加星标")
-
-                Button(role: .destructive) { requestTrash() } label: {
-                    Image(systemName: "trash")
-                }.help("删除（移入废纸篓）")
-            }
-        }
-
-        ToolbarItem {
-            Button { showLabelPopover.toggle() } label: {
-                Image(systemName: model.hasUserLabels ? "tag.fill" : "tag")
-            }.help("标签")
-            .popover(isPresented: $showLabelPopover) {
-                LabelEditorView(account: model.account ?? "", detail: model,
-                                onClose: { showLabelPopover = false })
-            }
-        }
-    }
-
-    /// 开一个撰写窗口回复或转发。
-    ///
-    /// 回复的是会话里**最后一封**：一串会话里用户想接的总是最新的那条，
-    /// 而不是最早那条。转发同理。
-    private func compose(_ kind: ComposeKind) {
-        guard let message = model.messages.last,
-              let selected = appState.singleSelection,
-              let account = appState.activeAccounts.first(where: { $0.id == selected.accountID })
-        else { return }
-
-        let id: UUID
-        switch kind {
-        case .reply(let all):
-            id = ComposeStore.shared.reply(to: message, account: account,
-                                           threadID: selected.threadID, all: all,
-                                           quotedBody: MailQuote.reply(to: message))
-        case .forward:
-            id = ComposeStore.shared.forward(message, account: account,
-                                             sourceAccount: selected.accountID,
-                                             quotedBody: MailQuote.forward(message))
-        case .new:
-            id = ComposeStore.shared.newMail(from: account)
-        }
-        openWindow(id: ComposeWindow.id, value: id)
     }
 
     /// 删除交给中栏列表执行：它会把行移除并自动选中下一封。
     private func requestTrash() {
         guard let account = model.account, let id = model.threadID else { return }
         appState.requestTrash(account: account, id: id)
-    }
-
-    /// 执行一个修改操作。
-    ///
-    /// 不需要通知任何人：改的是池子里的标签，列表看的是同一份数据，自己就更新了。
-    private func run(_ block: @escaping () async throws -> Void) {
-        Task {
-            do {
-                try await block()
-            } catch {
-                actionError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
     }
 
     private var isMultiSelection: Bool { appState.selectedThreads.count > 1 }
@@ -180,7 +71,7 @@ struct MessageDetailView: View {
         } else if model.isLoading && model.messages.isEmpty {
             ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            content
+            ThreadDetailPane(model: model, onTrash: requestTrash)
         }
     }
 
@@ -198,60 +89,82 @@ struct MessageDetailView: View {
         ThreadMessageCount(threadID: model.threadID ?? "", count: model.messageIDs.count)
     }
 
-    private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(model.subject)
-                    .font(.title2).bold()
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding([.horizontal, .top])
-
-                ForEach(model.messages) { message in
-                    MessageCard(
-                        message: message,
-                        account: model.account ?? "",
-                        isExpanded: expanded.contains(message.id),
-                        isUnread: model.isUnread(message.id),
-                        onToggle: { toggle(message.id) }
-                    )
-                    .padding(.horizontal)
-                }
-            }
-            .padding(.bottom, 12)
-        }
-    }
-
-    /// 切换单封邮件的展开/折叠。正文早就在手里了，纯本地。
-    private func toggle(_ id: String) {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
-        }
-    }
-
-    /// 会话加载后设定默认展开：多封时展开未读邮件；若全已读，只展开最新一封；单封则直接展开。
-    /// 仅当消息 id 集合相较上次发生变化时才重新计算，避免覆盖用户已手动调整的展开状态。
-    private func applyDefaultExpansion() {
-        let msgs = model.messages
-        guard !msgs.isEmpty else { expanded = []; expansionBasis = []; return }
-        let ids = Set(msgs.map(\.id))
-        guard ids != expansionBasis else { return }
-        expansionBasis = ids
-        if msgs.count == 1 { expanded = [msgs[0].id]; return }
-        let unread = msgs.filter { model.isUnread($0.id) }.map(\.id)
-        expanded = unread.isEmpty ? Set([msgs.last!.id]) : Set(unread)
-    }
-
     private func reload() async {
         guard let selected = appState.singleSelection else { return }
-        expansionBasis = []
         model.bind(to: mailStore)
         // 正文不可变：缓存有就直接显示，没有才拉一次。
         await model.open(account: selected.accountID, threadID: selected.threadID,
                          conversation: conversationView)
-        applyDefaultExpansion()
         // 打开即标记已读（改的是池子里的标签，列表跟着一起变）
         await model.markReadOnOpenIfNeeded()
+    }
+}
+
+/// 一封邮件的正文区：远程内容提示 + 正文 + 附件。
+///
+/// 单拎出来是因为它有两个去处：主窗口右栏的可折叠卡片里，和双击弹出的独立窗口里
+/// （那边没有卡片外框，正文直接铺满）。远程内容那套开关也就只有一份。
+struct MessageBodySection: View {
+    let message: RenderedMessage
+    let account: String
+
+    @State private var webHeight: CGFloat
+    /// 用户在本封邮件里手动点击「加载远程内容」后置为 true。
+    @State private var showRemote = false
+    /// 全局设置：是否默认加载远程内容。默认关闭。
+    @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = false
+
+    init(message: RenderedMessage, account: String) {
+        self.message = message
+        self.account = account
+        // 用上次量到的高度起步，正文一出现就是对的尺寸，不会先塌成一条再撑开
+        _webHeight = State(initialValue: MessageBodyLayout.height(for: message.id))
+    }
+
+    /// 本封邮件最终是否加载远程内容：全局默认开启，或用户手动加载过。
+    private var remoteEnabled: Bool { loadRemoteByDefault || showRemote }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if showsRemoteBanner {
+                remoteBanner
+            }
+            MessageWebView(html: message.bodyHTML, blockRemote: !remoteEnabled,
+                           messageID: message.id, height: $webHeight)
+                .frame(height: webHeight)
+            if !message.attachments.isEmpty {
+                attachmentsView
+            }
+        }
+    }
+
+    private var showsRemoteBanner: Bool {
+        // 仅在实际处于阻止状态、且正文含 http(s) 资源引用时，提示可加载远程内容。
+        guard !remoteEnabled else { return false }
+        return message.bodyHTML.contains("http://") || message.bodyHTML.contains("https://")
+    }
+
+    private var remoteBanner: some View {
+        HStack {
+            Image(systemName: "eye.slash")
+            Text("已阻止远程内容以保护隐私")
+                .font(.caption)
+            Spacer()
+            Button("加载远程内容") { showRemote = true }
+                .controlSize(.small)
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12)))
+    }
+
+    private var attachmentsView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("附件（\(message.attachments.count)）").font(.caption).foregroundStyle(.secondary)
+            ForEach(message.attachments) { att in
+                AttachmentChip(attachment: att, account: account)
+            }
+        }
+        .padding(.top, 4)
     }
 }
 
@@ -264,43 +177,13 @@ struct MessageCard: View {
     let isUnread: Bool
     let onToggle: () -> Void
 
-    @State private var webHeight: CGFloat
-
-    init(message: RenderedMessage, account: String, isExpanded: Bool,
-         isUnread: Bool, onToggle: @escaping () -> Void) {
-        self.message = message
-        self.account = account
-        self.isExpanded = isExpanded
-        self.isUnread = isUnread
-        self.onToggle = onToggle
-        // 用上次量到的高度起步，正文一出现就是对的尺寸，不会先塌成一条再撑开
-        _webHeight = State(initialValue: MessageBodyLayout.height(for: message.id))
-    }
-    /// 用户在本封邮件里手动点击「加载远程内容」后置为 true。
-    @State private var showRemote = false
-    /// 全局设置：是否默认加载远程内容。默认关闭。
-    @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = false
-
-    /// 本封邮件最终是否加载远程内容：全局默认开启，或用户手动加载过。
-    private var remoteEnabled: Bool { loadRemoteByDefault || showRemote }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if isExpanded {
                 Divider().padding(.horizontal, 12)
-                VStack(alignment: .leading, spacing: 8) {
-                    if showsRemoteBanner {
-                        remoteBanner
-                    }
-                    MessageWebView(html: message.bodyHTML, blockRemote: !remoteEnabled,
-                                   messageID: message.id, height: $webHeight)
-                        .frame(height: webHeight)
-                    if !message.attachments.isEmpty {
-                        attachmentsView
-                    }
-                }
-                .padding(12)
+                MessageBodySection(message: message, account: account)
+                    .padding(12)
             }
         }
         .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .textBackgroundColor)))
@@ -357,35 +240,6 @@ struct MessageCard: View {
             .frame(width: 32, height: 32)
             .overlay(Text(String(message.fromName.first ?? "?").uppercased())
                 .font(.system(size: 14, weight: .bold)).foregroundStyle(.white))
-    }
-
-    private var showsRemoteBanner: Bool {
-        // 仅在实际处于阻止状态、且正文含 http(s) 资源引用时，提示可加载远程内容。
-        guard !remoteEnabled else { return false }
-        return message.bodyHTML.contains("http://") || message.bodyHTML.contains("https://")
-    }
-
-    private var remoteBanner: some View {
-        HStack {
-            Image(systemName: "eye.slash")
-            Text("已阻止远程内容以保护隐私")
-                .font(.caption)
-            Spacer()
-            Button("加载远程内容") { showRemote = true }
-                .controlSize(.small)
-        }
-        .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12)))
-    }
-
-    private var attachmentsView: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("附件（\(message.attachments.count)）").font(.caption).foregroundStyle(.secondary)
-            ForEach(message.attachments) { att in
-                AttachmentChip(attachment: att, account: account)
-            }
-        }
-        .padding(.top, 4)
     }
 }
 

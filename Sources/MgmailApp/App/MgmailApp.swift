@@ -46,6 +46,22 @@ struct MgmailApp: App {
         // 不进「窗口 → 新建」菜单：新邮件有自己的 ⌘N，从那儿走才带得上发件人
         .commandsRemoved()
 
+        // 双击列表行弹出的独立邮件窗口。窗口值就是那一行的 key，
+        // 同一封邮件再双击时 SwiftUI 认这个值，把开着的那扇拿到前台而不是再开一扇。
+        WindowGroup(id: MessageWindow.id, for: SelectedThread.self) { $target in
+            if let target {
+                MessageWindowView(target: target)
+                    .environmentObject(appState)
+                    .environmentObject(labelStore)
+                    .environmentObject(mailStore)
+            }
+        }
+        // 纯阅读窗口：标题栏和工具栏都不要，整块地方留给正文，只剩三个圆点浮在左上角
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 760, height: 640)
+        // 不进「窗口 → 新建」菜单：这扇窗只能从某一封具体的邮件上开出来
+        .commandsRemoved()
+
         // 网络活动日志（仿 Apple Mail 的「活动」窗口，⌘0）。单例窗口，不跟主窗口走。
         Window("活动", id: ActivityWindow.id) {
             ActivityLogView()
