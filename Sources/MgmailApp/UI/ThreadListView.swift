@@ -5,6 +5,7 @@ struct ThreadListView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
     @EnvironmentObject private var mailStore: MailStore
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var model = ThreadListModel()
     /// 全局设置：是否按会话显示邮件。默认关闭（每行一封独立邮件）。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
@@ -111,6 +112,13 @@ struct ThreadListView: View {
             guard let request else { return }
             rows.performTrash([SelectedThread(accountID: request.account, threadID: request.id)])
         }
+        // 双击某一行：开一扇独立窗口。同一封邮件再双击时，SwiftUI 认窗口值，
+        // 会把已经开着的那扇拿到前台，而不是叠一扇新的。
+        .onChange(of: appState.detachRequest) { _, request in
+            guard let request else { return }
+            openWindow(id: MessageWindow.id,
+                       value: SelectedThread(accountID: request.account, threadID: request.id))
+        }
         .onChange(of: appState.selectedThreads) { _, sel in
             // 同步选中项摘要（供右栏多选叠加卡片），保持列表顺序。
             // 必须推迟一拍再写回：这里仍处在 NSTableView 的选择回调里，
@@ -144,6 +152,9 @@ struct ThreadListView: View {
             backfillFooter
         }
         .listStyle(.inset)
+        // 双击某行 → 独立窗口。装在列表上而不是行上，用的是表格自己的双击动作，
+        // 单击选中因此毫发无伤，详见 ThreadListDoubleClick。
+        .background(ThreadListDoubleClick())
         // 浮动批量条：用 overlay 不占布局空间，避免出现/消失时列表位移
         .overlay(alignment: .bottom) { batchBar }
         // 按删除键：删除所有选中的会话
@@ -400,6 +411,9 @@ private struct ThreadListRow: View {
     private var menu: some View {
         let n = rows.targets(summary).count
         let suffix = n > 1 ? "（\(n) 封）" : ""
+        // 双击是这个功能的主入口，但双击本身看不见，菜单里得留个能被发现的说法
+        Button("在新窗口中打开") { rows.openInWindow(summary.key) }
+        Divider()
         Button((summary.isUnread ? "标记为已读" : "标记为未读") + suffix) { rows.toggleUnread(summary) }
         Button((summary.isStarred ? "取消旗标" : "旗标") + suffix) { rows.toggleStar(summary) }
         if isArchivable {

@@ -76,6 +76,11 @@ final class AppState: ObservableObject {
     @Published var syncRequest: SyncRequest?
     private var syncToken = 0
 
+    /// 双击列表行发来的「开一扇独立窗口」请求，由中栏列表执行
+    /// （`openWindow` 只有视图里拿得到，行上的手势够不着）。
+    @Published var detachRequest: ThreadRequest?
+    private var detachToken = 0
+
     /// 头像缓存更新计数（下载完成后自增，驱动头像视图刷新）。
     @Published var avatarReloadToken = 0
 
@@ -92,6 +97,12 @@ final class AppState: ObservableObject {
     func requestSync(account: String?) {
         syncToken += 1
         syncRequest = SyncRequest(accountID: account, token: syncToken)
+    }
+
+    /// 请求把某封邮件/会话拎到独立窗口里看（双击行、或右键「在新窗口中打开」）。
+    func requestDetach(account: String, id: String) {
+        detachToken += 1
+        detachRequest = ThreadRequest(account: account, id: id, token: detachToken)
     }
 
 

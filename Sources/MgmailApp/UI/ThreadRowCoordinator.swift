@@ -69,6 +69,22 @@ final class ThreadRowCoordinator: ObservableObject {
     func archive(_ summary: ThreadSummary) { performArchive(targets(summary)) }
     func trash(_ summary: ThreadSummary) { performTrash(targets(summary)) }
 
+    /// 双击（或右键「在新窗口中打开」）：把这一行拎到独立窗口里。
+    ///
+    /// 只作用于点中的那一行，不跟着多选走——双击的意思是「就看这一封」。
+    func openInWindow(_ key: SelectedThread) {
+        appState.requestDetach(account: key.accountID, id: key.threadID)
+    }
+
+    /// 双击表格第 `row` 行。
+    ///
+    /// 表格给的是行号（见 `ThreadListDoubleClick`），这里翻译成那一封邮件。
+    /// 列表末尾还有一行「已回溯至 …」的页脚，它的行号越界，正好被这里挡掉。
+    func openInWindow(rowAt row: Int) {
+        guard let model, model.summaries.indices.contains(row) else { return }
+        openInWindow(model.summaries[row].key)
+    }
+
     // MARK: - 批量执行（含删除/归档后自动选中下一封）
 
     func performTrash(_ keys: [SelectedThread]) {
