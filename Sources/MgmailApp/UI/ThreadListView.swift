@@ -152,6 +152,9 @@ struct ThreadListView: View {
             backfillFooter
         }
         .listStyle(.inset)
+        // 双击某行 → 独立窗口。装在列表上而不是行上，用的是表格自己的双击动作，
+        // 单击选中因此毫发无伤，详见 ThreadListDoubleClick。
+        .background(ThreadListDoubleClick())
         // 浮动批量条：用 overlay 不占布局空间，避免出现/消失时列表位移
         .overlay(alignment: .bottom) { batchBar }
         // 按删除键：删除所有选中的会话
@@ -360,10 +363,6 @@ private struct ThreadListRow: View {
 
     @ViewBuilder
     var body: some View {
-        // 先把 key 取成局部常量：手势闭包里写 `summary.key` 会连整个 self 一起捕获，
-        // 于是打标签这类内容变化也让 SwiftUI 判定手势变了、重新注册一次 ——
-        // 那发生在 NSTableView 的回调里就是重入。只捕获这个值类型，行内容怎么变都与它无关。
-        let key = summary.key
         let base = ThreadRow(summary: summary, labelMap: labelMap,
                   accountBadge: accountBadge, avatarReloadToken: avatarReloadToken)
             .contextMenu { menu }
@@ -372,17 +371,6 @@ private struct ThreadListRow: View {
             .swipeActions(edge: .trailing, allowsFullSwipe: true) { trailingSwipe }
             .opacity(affinity.dimmed ? 0.35 : 1)
             .animation(.easeOut(duration: 0.15), value: affinity.dimmed)
-            // 双击：把这一封拎到独立窗口里看。
-            //
-            // 用 simultaneousGesture 而不是 onTapGesture：后者会把点击吃掉，
-            // List 收不到就选不中行了。并列上去两边都收得到——单击照常选中，
-            // 第二下落进来才开窗。
-            //
-            // 闭包里走静态单例而不是 `rows`：`rows` 是计算属性，写它等于捕获 self，
-            // 于是行内容一变 SwiftUI 就判定手势变了、在 NSTableView 的回调里重新注册它。
-            .simultaneousGesture(TapGesture(count: 2).onEnded {
-                ThreadRowCoordinator.shared.openInWindow(key)
-            })
 
         // 放置区只在真的拖着标签时才挂。onDrop 的闭包无法被 SwiftUI 判定为「没变」，
         // 常挂着会让每次改选中都重新注册一次放置区 —— 那正是 NSTableView 重入的来源。
