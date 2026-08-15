@@ -13,6 +13,7 @@ trap 'rm -rf "$OUT"' EXIT
 swiftc -O \
     Scripts/MailboxCheck.swift \
     Sources/MgmailApp/Gmail/Mailbox.swift \
+    Sources/MgmailApp/Gmail/MailPlacement.swift \
     -o "$OUT/mailbox-check"
 
 "$OUT/mailbox-check"
