@@ -31,6 +31,7 @@ struct MailboxCheck {
         discardedMail()
         trashAndSpamThemselves()
         apiParameters()
+        placement()
 
         if failures.isEmpty {
             print("✓ \(passed) 项检查全部通过")
@@ -95,5 +96,32 @@ struct MailboxCheck {
         expect(MailboxQuery.needsExplicitFetch(labelID: "TRASH"), "废纸篓要单独拉")
         expect(MailboxQuery.needsExplicitFetch(labelID: "SPAM"), "垃圾邮件要单独拉")
         expect(!MailboxQuery.needsExplicitFetch(labelID: "INBOX"), "收件箱在账户级返回范围内")
+    }
+
+    // MARK: - 三态与各自还剩哪些动作
+
+    static func placement() {
+        expect(MailPlacement(labels: ["INBOX", "UNREAD"]) == .inbox, "带 INBOX 的在收件箱")
+        expect(MailPlacement(labels: ["SENT", "Label_12"]) == .archived, "不在收件箱也没被删的算归档")
+        expect(MailPlacement(labels: ["TRASH", "SENT"]) == .trashed, "带 TRASH 的在废纸篓")
+        expect(MailPlacement(labels: ["SPAM"]) == .archived, "垃圾邮件也是「不在收件箱」的一种")
+        // 会话模式下这组标签是整串的并集：一串里还有一封在收件箱，这一行就还算在收件箱
+        expect(MailPlacement(labels: ["INBOX", "TRASH"]) == .inbox, "并集里有 INBOX 时收件箱优先")
+
+        expect(MailPlacement.inbox.canArchive && MailPlacement.inbox.canTrash,
+               "收件箱：可归档、可删除")
+        expect(!MailPlacement.inbox.canMoveToInbox, "收件箱：没有「移回收件箱」可言")
+        expect(MailPlacement.archived.canMoveToInbox && MailPlacement.archived.canTrash,
+               "归档：可移回收件箱、可删除")
+        expect(!MailPlacement.archived.canArchive, "归档过的不该再摆一次归档")
+        expect(MailPlacement.trashed.canMoveToInbox, "废纸篓：可移回收件箱")
+        // 再删一次就是永久删除，那不是这个应用做的事
+        expect(!MailPlacement.trashed.canTrash && !MailPlacement.trashed.canArchive,
+               "废纸篓：只剩移回收件箱这一条")
+
+        // 放回收件箱的标签动作里不能有 TRASH——那个得走 untrash 接口，改标签是改不掉的
+        expect(!MailPlacement.inboxRemove.contains("TRASH"), "从废纸篓恢复不靠改标签")
+        expect(MailPlacement.inboxRemove.contains("SPAM"), "放回收件箱要一并解除垃圾邮件")
+        expect(MailPlacement.inboxAdd == ["INBOX"], "放回收件箱就是加 INBOX")
     }
 }

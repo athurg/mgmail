@@ -359,6 +359,12 @@ final class MailStore: ObservableObject {
         applyLabels(account: account, messageIDs: messageIDs, add: ["TRASH"], remove: ["INBOX"])
     }
 
+    /// 放回收件箱：加 INBOX，并把 TRASH / SPAM 摘掉——归档的和删掉的都走这一条。
+    func applyMoveToInbox(account: String, messageIDs: [String]) {
+        applyLabels(account: account, messageIDs: messageIDs,
+                    add: MailPlacement.inboxAdd, remove: MailPlacement.inboxRemove + ["TRASH"])
+    }
+
     // MARK: - 内部
 
     private func merge(_ fresh: [PooledMessage], into account: String) {

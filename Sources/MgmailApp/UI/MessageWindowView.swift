@@ -22,7 +22,6 @@ struct MessageWindowView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var mailStore: MailStore
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismiss) private var dismiss
     @StateObject private var model = MessageDetailModel()
     /// 工具栏上那些操作失败时的提示文案。
     @State private var actionError: String?
@@ -65,7 +64,9 @@ struct MessageWindowView: View {
 
     /// 标题栏右侧的按钮。
     ///
-    /// 归档和删除常驻——读一封信最后总要处置它，这两个按钮该一直在手边。
+    /// 处置这封信的那两个常驻——读一封信最后总要处置它，它们该一直在手边。
+    /// 一个是删除，一个随邮件所在处变脸（在收件箱是归档，在别处是移回收件箱）；
+    /// 已经在废纸篓里的信没什么可再删的，那时只剩变脸的那一个。
     /// 其余的（写信三件套、已读未读、星标）鼠标进了这扇窗才淡入，挪开就淡掉：
     /// 平时标题栏干净，手伸过来工具才出现。快捷键（⌘R 等）不受影响，淡着也一直认。
     ///
@@ -130,24 +131,33 @@ struct MessageWindowView: View {
                 }
                 .modifier(HoverRevealed(shown: pointerInside))
 
-                Button {
-                    // 删完这扇窗就没有存在的理由了，随手关掉
-                    run { try await model.trash(); dismiss() }
-                } label: {
-                    Image(systemName: "trash")
-                }.help("删除（移入废纸篓）")
+                // 已经在废纸篓里的就不摆删除了：再删一次只能是永久删除，这个应用不做。
+                if model.placement.canTrash {
+                    Button {
+                        // 删完不关窗：信进了废纸篓照样能看、能移回收件箱，这个按钮自己会
+                        // 退成只剩「移回收件箱」，人想反悔就在原地反悔——关掉窗反倒断了这条路。
+                        run { try await model.trash() }
+                    } label: {
+                        Image(systemName: "trash")
+                    }.help("删除（移入废纸篓）")
+                }
 
+                // 归档和移回收件箱是同一个按钮的两副面孔，见 ThreadDetailPane 里的同一处
                 Button {
-                    run { try await model.archive() }
+                    let placement = model.placement
+                    run {
+                        if placement.canArchive { try await model.archive() }
+                        else { try await model.moveToInbox() }
+                    }
                 } label: {
-                    Image(systemName: "archivebox")
-                }.help("归档（移出收件箱）").disabled(!model.isInInbox)
+                    Image(systemName: model.placement.moveIcon)
+                }.help(model.placement.moveHelp)
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             // 让最右那个按钮离窗口边角的距离，跟左边第一个圆点离边角的距离对上：
             // 系统默认留得比红绿灯那头少，右边显得贴边。这个数是照着实测补的差额，
-            // 跟最右是哪个图标有关（换掉归档的话得重新量一次）。
+            // 跟最右是哪个图标有关（照归档那个图标量的；换掉最右那个按钮得重新量一次）。
             .padding(.trailing, 15)
         }
     }

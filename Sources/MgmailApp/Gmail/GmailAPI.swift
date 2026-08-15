@@ -104,6 +104,19 @@ struct GmailAPI {
         _ = try await send(path: "/messages/\(id)/trash", method: "POST")
     }
 
+    /// 把会话从废纸篓里捞回来。
+    ///
+    /// 单独一个接口，不能靠 `modify` 去掉 TRASH 标签——Gmail 不接受那样改。
+    /// 捞回来之后落在哪由调用方再发一次 `modify` 定（这个应用一律送回收件箱）。
+    func untrashThread(id: String) async throws {
+        _ = try await send(path: "/threads/\(id)/untrash", method: "POST")
+    }
+
+    /// 把单封邮件从废纸篓里捞回来（不按会话显示时用）。
+    func untrashMessage(id: String) async throws {
+        _ = try await send(path: "/messages/\(id)/untrash", method: "POST")
+    }
+
     func modifyThread(id: String, add: [String] = [], remove: [String] = []) async throws {
         let body = try JSONEncoder().encode(ModifyRequest(
             addLabelIds: add.isEmpty ? nil : add,

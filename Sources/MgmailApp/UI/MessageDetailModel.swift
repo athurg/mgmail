@@ -63,7 +63,8 @@ final class MessageDetailModel: ObservableObject {
 
     var isUnread: Bool { threadLabelIds.contains("UNREAD") }
     var isStarred: Bool { threadLabelIds.contains("STARRED") }
-    var isInInbox: Bool { threadLabelIds.contains("INBOX") }
+    /// 在收件箱、归档，还是废纸篓——工具栏上那两个按钮的面孔由它定。
+    var placement: MailPlacement { MailPlacement(labels: threadLabelIds) }
     /// 是否带有用户自建标签（Gmail 的用户标签 id 统一以 "Label_" 开头）。
     var hasUserLabels: Bool { threadLabelIds.contains { $0.hasPrefix("Label_") } }
 
@@ -208,6 +209,32 @@ final class MessageDetailModel: ObservableObject {
 
     func archive() async throws {
         try await modify(remove: ["INBOX"])
+    }
+
+    /// 放回收件箱：归档的直接加回 INBOX，废纸篓里的先捞出来再加。
+    ///
+    /// 从废纸篓回来要发两次请求：`untrash` 只负责把 TRASH 摘掉，落点是 Gmail 记着的
+    /// 原位置（可能是「所有邮件」）；用户按的是「移回收件箱」，那就得再明确送进收件箱一次。
+    func moveToInbox() async throws {
+        guard let account, let threadID, let store else { return }
+        let ids = messageIDs
+        let wasTrashed = placement == .trashed // 本地一改就看不出来了，先记下
+        store.applyMoveToInbox(account: account, messageIDs: ids)
+        do {
+            let api = GmailAPI(account: account)
+            if conversation {
+                if wasTrashed { try await api.untrashThread(id: threadID) }
+                try await api.modifyThread(id: threadID, add: MailPlacement.inboxAdd,
+                                           remove: MailPlacement.inboxRemove)
+            } else {
+                if wasTrashed { try await api.untrashMessage(id: threadID) }
+                try await api.modifyMessage(id: threadID, add: MailPlacement.inboxAdd,
+                                            remove: MailPlacement.inboxRemove)
+            }
+        } catch {
+            await store.revalidate(account: account, messageIDs: ids)
+            throw error
+        }
     }
 
     /// 移入废纸篓。
