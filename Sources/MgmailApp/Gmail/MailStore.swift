@@ -69,8 +69,45 @@ struct AccountPool: Codable {
     /// 现算就是每次重绘都把近千封邮件扫一遍。
     private(set) var oldestDate: Date?
 
+    /// 欠着的信头：知道有这么一封，但还没把它的 metadata 拿回来。
+    ///
+    /// 两个来源，共同点是「错过这一次就再没有下一次」——池子只增不减，
+    /// 回溯又是一条不回头的线，没人会替它们重来：
+    /// - 批量取信头时个别子请求失败的。翻页照常往前，这一封就此被跳过。
+    /// - 增量同步报告标签变动、但池子里没有的。池外不等于太旧，它可能刚从
+    ///   废纸篓被捞回收件箱，也可能当初就是上一种情况漏掉的。
+    var pending: Set<String> = []
+
+    /// 欠账的上限。到这个量级说明同步已经出了别的问题，再攒下去只是让
+    /// 每轮补取都在原地打转。
+    static let pendingLimit = 500
+
     mutating func refreshOldest() {
         oldestDate = messages.values.compactMap(\.date).min()
+    }
+
+    mutating func remember(pending id: String) {
+        guard pending.count < Self.pendingLimit else { return }
+        pending.insert(id)
+    }
+}
+
+extension AccountPool {
+    private enum CodingKeys: String, CodingKey {
+        case messages, cursors, oldestDate, pending
+    }
+
+    /// 手写解码，只为一件事：给池子加字段时，旧的 pool.json 仍然读得进来。
+    ///
+    /// 合成的解码器对「有默认值但非可选」的字段照样要求键存在，缺一个就整份抛错，
+    /// 而这份文件解不出来的后果不是少个字段，是池子被当成空的、整个账户推倒重拉——
+    /// 回溯范围之外的邮件就此消失，界面上还什么都不会说。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        messages = try container.decodeIfPresent([String: PooledMessage].self, forKey: .messages) ?? [:]
+        cursors = try container.decodeIfPresent([String: PoolCursor].self, forKey: .cursors) ?? [:]
+        oldestDate = try container.decodeIfPresent(Date.self, forKey: .oldestDate)
+        pending = try container.decodeIfPresent(Set<String>.self, forKey: .pending) ?? []
     }
 }
 
@@ -189,6 +226,7 @@ final class MailStore: ObservableObject {
                 }
             }
         }
+        await resolvePending(account: account)
         await backfill(account: account, scope: nil)
         persist(account)
     }
@@ -207,6 +245,12 @@ final class MailStore: ObservableObject {
 
     /// 沿一条拉取线往前翻，直到够了设置里的条数、翻过了设置里的时间，或者服务器没有更多。
     private func backfill(account: String, scope: String?) async {
+        // 位点要在**开拉之前**记下。首次全量是几十秒到几分钟的事，等拉完再记，
+        // 这中间到达的邮件就掉进缝里了：列表第一页取的时候它还没到，
+        // 而增量的起点又排在它后面，两头都够不着，且再没有人会回头发现它。
+        // 位点早一点最多让下一轮重复处理几条，重复无害，漏掉是永久的。
+        await MailSync.captureStartPointIfNeeded(account: account)
+
         let key = scope ?? ""
         var cursor = pools[account]?.cursors[key] ?? PoolCursor()
         guard !cursor.noMore else { return }
@@ -233,12 +277,17 @@ final class MailStore: ObservableObject {
 
                 // 这一页的信头没取回来就停在这儿，游标不动。往前翻的话，
                 // 这一页的邮件谁也不会再回来拉一次，等于凭空少掉一页。
-                guard let fetched = await fetchMetadata(refs.map(\.id), api: api) else {
+                guard let batch = await fetchMetadata(refs.map(\.id), api: api) else {
                     lastError = "同步中断，稍后会自动重试"
                     break
                 }
-                merge(fetched, into: account)
-                cursor.fetched += fetched.count
+                merge(batch.messages, into: account)
+                // 整页失败会停在上面，走到这里说明只是个别子请求没成。那几封同样
+                // 没人会再回来拉——记进欠账，交给 `resolvePending` 补。
+                remember(pending: batch.failed, account: account)
+                // 记「翻过了多少封」，不是「拿到了多少封」：这个数是拿来对照回溯
+                // 上限的，漏掉的那几封同样占掉了页面的位置。
+                cursor.fetched += refs.count
                 cursor.pageToken = list.nextPageToken
                 // 每页都记下来：中途失败或退出，已经拉到的不白费
                 setCursor(cursor, key: key, account: account)
@@ -248,7 +297,7 @@ final class MailStore: ObservableObject {
                     break
                 }
                 // 翻到比回溯时间更早的邮件了，停在这（这一页整体收下，不再往前）
-                if let oldest = fetched.compactMap(\.date).min(), oldest < cutoff {
+                if let oldest = batch.messages.compactMap(\.date).min(), oldest < cutoff {
                     cursor.stoppedAtDays = days
                     break
                 }
@@ -258,26 +307,72 @@ final class MailStore: ObservableObject {
             }
         }
         setCursor(cursor, key: key, account: account)
-        // 首次拉完顺手记下同步位点，之后的变化就都走增量了
-        await MailSync.captureStartPointIfNeeded(account: account)
+    }
+
+    /// 一批信头的取回结果。
+    struct MetadataBatch {
+        var messages: [PooledMessage] = []
+        /// 这一批里没拿回来的：子请求失败，或响应解不出来。整趟请求失败不在此列。
+        var failed: [String] = []
+        /// 服务器明确说没有这封信（404）。已经不存在的东西不必再欠着。
+        var gone: [String] = []
     }
 
     /// 一次 batch 把整页的 metadata 取回来：一页 100 封是 1 个请求，不是 100 个。
     ///
-    /// 返回 nil 表示这一趟请求本身没成功，区别于「成功了但一封都没解出来」。
-    /// 两者必须分开：前者要让调用方停下重来，后者才可以放心往前走。
-    private func fetchMetadata(_ ids: [String], api: GmailAPI) async -> [PooledMessage]? {
-        guard !ids.isEmpty else { return [] }
+    /// 返回 nil 表示这一趟请求本身没成功，区别于「成功了但个别子请求失败」。
+    /// 三种结果必须分开：整趟失败要让调用方停下重来；个别失败得记下来，
+    /// 因为调用方翻过这一页就再也不会回来；只有确实取回来的才算数。
+    private func fetchMetadata(_ ids: [String], api: GmailAPI) async -> MetadataBatch? {
+        guard !ids.isEmpty else { return MetadataBatch() }
         let items = ids.map {
             BatchItem(id: $0, path: "/messages/\($0)", query: Self.metadataQuery)
         }
         guard let responses = try? await api.batchGet(items) else { return nil }
-        return ids.compactMap { id in
-            guard let result = responses[id], result.isSuccess,
-                  let message = try? JSONDecoder().decode(GmailMessage.self, from: result.body)
-            else { return nil }
-            return PooledMessage(message)
+
+        var batch = MetadataBatch()
+        for id in ids {
+            guard let result = responses[id] else {
+                batch.failed.append(id)
+                continue
+            }
+            guard result.isSuccess else {
+                if result.status == 404 { batch.gone.append(id) } else { batch.failed.append(id) }
+                continue
+            }
+            guard let message = try? JSONDecoder().decode(GmailMessage.self, from: result.body) else {
+                batch.failed.append(id)
+                continue
+            }
+            batch.messages.append(PooledMessage(message))
         }
+        return batch
+    }
+
+    /// 把欠着的信头补回来。每轮同步补一批，取回来的就不欠了。
+    ///
+    /// 这是池子唯一的「回头路」：其余每条线都是只往前走的——回溯不回头，
+    /// 增量只认位点之后的变化。没有这一步，任何一次漏掉都是永久的。
+    private func resolvePending(account: String) async {
+        guard let owed = pools[account]?.pending, !owed.isEmpty else { return }
+        let ids = Array(owed.prefix(GmailAPI.batchLimit))
+        guard let batch = await fetchMetadata(ids, api: GmailAPI(account: account)) else { return }
+
+        merge(batch.messages, into: account)
+        guard var pool = pools[account] else { return }
+        // 拿回来的、以及服务器说没有的，都不必再欠着。剩下的留到下一轮再试。
+        pool.pending.subtract(batch.messages.map(\.id))
+        pool.pending.subtract(batch.gone)
+        pools[account] = pool
+    }
+
+    private func remember(pending ids: [String], account: String) {
+        guard !ids.isEmpty else { return }
+        var pool = pools[account] ?? AccountPool()
+        for id in ids {
+            pool.remember(pending: id)
+        }
+        pools[account] = pool
     }
 
     private static let metadataQuery: [URLQueryItem] = {
@@ -298,7 +393,15 @@ final class MailStore: ObservableObject {
         }
         if !outcome.removed.isEmpty { pool.refreshOldest() }
         for (id, delta) in outcome.labelChanges {
-            guard var message = pool.messages[id] else { continue } // 不在回溯范围内，不关心
+            guard var message = pool.messages[id] else {
+                // 池外不等于「太旧、不关心」。它可能刚被从废纸篓捞回收件箱，
+                // 也可能当初取信头时漏掉了——这两种邮件在服务器上活得好好的，
+                // 只是本地不知道。丢掉这条变动，它就再也没有机会出现在列表里。
+                //
+                // 只有加标签才值得补：纯粹被摘掉标签的邮件，补回来也不属于任何视图。
+                if !delta.add.isEmpty { pool.remember(pending: id) }
+                continue
+            }
             var labels = Set(message.labelIds)
             labels.formUnion(delta.add)
             labels.subtract(delta.remove)
@@ -317,21 +420,31 @@ final class MailStore: ObservableObject {
     /// 返回信头是否确实取回来了——位点要等这个点头才能往前推。
     @discardableResult
     private func fetchNew(_ added: [String: String], account: String) async -> Bool {
-        let ids = added.keys.filter { pools[account]?.messages[$0] == nil }
+        let ids = Array(added.keys)
         guard !ids.isEmpty else { return true }
-        guard let fresh = await fetchMetadata(Array(ids), api: GmailAPI(account: account)) else {
+        // 池子里已经有的也要重取。`MailSync` 把 added 那几封的标签变动删掉了，
+        // 理由是「信头会连同最新标签一起回来」——那就不能反过来因为池里已经有它
+        // 而跳过取信头，否则这一轮它的标签变动两头都没人管，会一直停在旧值上。
+        let known = Set(ids.filter { pools[account]?.messages[$0] != nil })
+        guard let batch = await fetchMetadata(ids, api: GmailAPI(account: account)) else {
             return false
         }
-        merge(fresh, into: account)
-        NewMailNotifier.shared.enqueue(fresh, account: account)
+        merge(batch.messages, into: account)
+        // 个别没取回来的记进欠账，位点就可以照常往前推——不会再有邮件因此消失
+        remember(pending: batch.failed, account: account)
+        // 通知只报真正新到的：重取回来的老邮件不该再弹一次
+        NewMailNotifier.shared.enqueue(batch.messages.filter { !known.contains($0.id) },
+                                       account: account)
         return true
     }
 
     /// 拿服务器状态纠正几封邮件（本地改标签失败时用）。
     func revalidate(account: String, messageIDs: [String]) async {
         guard !messageIDs.isEmpty,
-              let fresh = await fetchMetadata(messageIDs, api: GmailAPI(account: account)) else { return }
-        merge(fresh, into: account)
+              let batch = await fetchMetadata(messageIDs, api: GmailAPI(account: account)) else { return }
+        merge(batch.messages, into: account)
+        // 纠正失败的那几封本地还留着改坏的状态，欠着，下一轮同步接着纠
+        remember(pending: batch.failed, account: account)
         persist(account)
     }
 
