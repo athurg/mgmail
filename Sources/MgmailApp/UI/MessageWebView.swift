@@ -36,11 +36,43 @@ final class RemoteContentBlocker {
     }
 }
 
-/// WKWebView 子类：不自己消费滚轮事件，转发给外层 SwiftUI ScrollView，
+/// WKWebView 子类：纵向滚轮事件不自己消费，转发给外层 SwiftUI ScrollView，
 /// 这样在多封邮件的会话里滚动时是整体滚动，而不是只滚动鼠标下的那一封。
+///
+/// 横向的那一半得留下来自己滚。外层 ScrollView 只有纵轴，横向事件递出去就是石沉大海，
+/// 而超出窗口宽度的正文（宽表格、大图、不折行的长串）本来就只有这一条路能看全。
 final class PassthroughWebView: WKWebView {
+    /// 正文这会儿有没有超出可视宽度，由页面脚本量出来告诉我们。
+    ///
+    /// 没超出就不该截胡横滑：那时候自己滚不动，事件却也到不了外层，
+    /// 触控板上斜着滑一下会莫名其妙地卡住。
+    var hasHorizontalOverflow = false
+
+    /// 这一串滚动事件是不是自己留着横滚。
+    ///
+    /// 手势一开始就定下来，中途不改主意：滑动很少是正南正北的，逐个事件判断的话
+    /// 一次滑动会在自己和外层之间来回跳，内容一顿一顿的。
+    private var keepsGesture = false
+
     override func scrollWheel(with event: NSEvent) {
-        nextResponder?.scrollWheel(with: event)
+        // 触控板手势在 .began 那一下定方向，后续的 .changed 和惯性滑行都沿用；
+        // 传统滚轮没有 phase，每个事件各自判断。
+        if event.phase == .began || (event.phase.isEmpty && event.momentumPhase.isEmpty) {
+            keepsGesture = wantsHorizontalScroll(event)
+        }
+        if keepsGesture {
+            super.scrollWheel(with: event)
+        } else {
+            nextResponder?.scrollWheel(with: event)
+        }
+    }
+
+    /// 这一下是不是冲着横向来的：正文确实横向溢出，且手势偏横——
+    /// 或者按住了 shift，那是只有一个滚轮的鼠标表达「横着滚」的方式。
+    private func wantsHorizontalScroll(_ event: NSEvent) -> Bool {
+        guard hasHorizontalOverflow else { return false }
+        if event.modifierFlags.contains(.shift) { return true }
+        return abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
     }
 }
 
@@ -125,10 +157,17 @@ struct MessageWebView: NSViewRepresentable {
 
         init(_ parent: MessageWebView) { self.parent = parent }
 
-        /// 收到页面回传的内容高度变化，同步更新宿主 frame，避免内部产生溢出滚动。
+        /// 收到页面回传的内容尺寸，同步更新宿主 frame，避免内部产生纵向溢出滚动；
+        /// 横向溢没溢出则交给 web view，它据此决定横滑要不要留下自己滚。
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.name == "heightChanged", let h = message.body as? CGFloat else { return }
-            Task { @MainActor in self.apply(max(h, 40)) }
+            guard message.name == "heightChanged", let payload = message.body as? [String: Any],
+                  let h = (payload["height"] as? NSNumber)?.doubleValue else { return }
+            let overflowX = (payload["overflowX"] as? NSNumber)?.boolValue ?? false
+            let webView = message.webView
+            Task { @MainActor in
+                (webView as? PassthroughWebView)?.hasHorizontalOverflow = overflowX
+                self.apply(max(CGFloat(h), 40))
+            }
         }
 
         @MainActor
@@ -157,12 +196,23 @@ struct MessageWebView: NSViewRepresentable {
             // 关掉 WKWebView 内部滚动视图的弹性，配合精确高度，让内部无内容可滚，
             // 滚轮事件顺着响应链交给外层 ScrollView 整体滚动。
             disableInternalScrollElasticity(webView)
-            webView.evaluateJavaScript("document.body.scrollHeight") { result, _ in
-                if let h = result as? CGFloat {
-                    Task { @MainActor in self.apply(max(h, 40)) }
+            // 脚本万一没跑起来（正文里有东西把它顶掉了），这儿自己量一次兜底。
+            webView.evaluateJavaScript(Self.measureJS) { result, _ in
+                guard let pair = result as? [Any],
+                      let h = (pair.first as? NSNumber)?.doubleValue else { return }
+                let overflowX = (pair.count > 1 ? pair[1] as? NSNumber : nil)?.boolValue ?? false
+                Task { @MainActor in
+                    (webView as? PassthroughWebView)?.hasHorizontalOverflow = overflowX
+                    self.apply(max(CGFloat(h), 40))
                 }
             }
         }
+
+        /// 量正文尺寸：[内容高度, 是否横向溢出]。留 1px 余量，避开子像素带来的假溢出。
+        private static let measureJS = """
+        [document.body.scrollHeight,
+         document.documentElement.scrollWidth > document.documentElement.clientWidth + 1]
+        """
 
         /// 递归找到 WKWebView 内部的 NSScrollView 并关闭其弹性滚动。
         private func disableInternalScrollElasticity(_ view: NSView) {
@@ -203,12 +253,19 @@ struct MessageWebView: NSViewRepresentable {
             <script>
             (function () {
               function report() {
-                var h = Math.ceil(document.body.scrollHeight);
-                window.webkit.messageHandlers.heightChanged.postMessage(h);
+                var doc = document.documentElement;
+                window.webkit.messageHandlers.heightChanged.postMessage({
+                  height: Math.ceil(document.body.scrollHeight),
+                  // 留 1px 余量，避开子像素带来的假溢出
+                  overflowX: doc.scrollWidth > doc.clientWidth + 1
+                });
               }
-              // 内容尺寸变化（图片加载、字体就绪、布局变动）时都重新上报高度。
+              // 内容尺寸变化（图片加载、字体就绪、窗口宽度变动）时都重新上报。
+              // 窗口变窄会让原本放得下的正文溢出，横滚要跟着开；变宽则反过来。
               if (window.ResizeObserver) {
-                new ResizeObserver(report).observe(document.body);
+                var ro = new ResizeObserver(report);
+                ro.observe(document.body);          // 内容高度
+                ro.observe(document.documentElement); // 可视宽度
               }
               window.addEventListener('load', report);
               Array.prototype.forEach.call(document.images, function (img) {
