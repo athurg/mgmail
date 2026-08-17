@@ -82,6 +82,13 @@ struct AccountPool: Codable {
     /// 每轮补取都在原地打转。
     static let pendingLimit = 500
 
+    /// 上次跟服务器核对收件箱的时间。
+    private(set) var lastAuditAt: Date?
+
+    mutating func markAudited(at date: Date = Date()) {
+        lastAuditAt = date
+    }
+
     mutating func refreshOldest() {
         oldestDate = messages.values.compactMap(\.date).min()
     }
@@ -94,7 +101,7 @@ struct AccountPool: Codable {
 
 extension AccountPool {
     private enum CodingKeys: String, CodingKey {
-        case messages, cursors, oldestDate, pending
+        case messages, cursors, oldestDate, pending, lastAuditAt
     }
 
     /// 手写解码，只为一件事：给池子加字段时，旧的 pool.json 仍然读得进来。
@@ -108,6 +115,7 @@ extension AccountPool {
         cursors = try container.decodeIfPresent([String: PoolCursor].self, forKey: .cursors) ?? [:]
         oldestDate = try container.decodeIfPresent(Date.self, forKey: .oldestDate)
         pending = try container.decodeIfPresent(Set<String>.self, forKey: .pending) ?? []
+        lastAuditAt = try container.decodeIfPresent(Date.self, forKey: .lastAuditAt)
     }
 }
 
@@ -228,6 +236,7 @@ final class MailStore: ObservableObject {
         }
         await resolvePending(account: account)
         await backfill(account: account, scope: nil)
+        await auditInbox(account: account)
         persist(account)
     }
 
@@ -363,6 +372,65 @@ final class MailStore: ObservableObject {
         // 拿回来的、以及服务器说没有的，都不必再欠着。剩下的留到下一轮再试。
         pool.pending.subtract(batch.messages.map(\.id))
         pool.pending.subtract(batch.gone)
+        pools[account] = pool
+    }
+
+    // MARK: - 收件箱对账
+
+    /// 隔多久跟服务器核对一次收件箱。
+    private static let auditInterval: TimeInterval = 6 * 3600
+    /// 一次对账最多翻几页。翻不完的话只补不删，见 `auditInbox`。
+    private static let auditPageLimit = 3
+
+    /// 拿服务器的收件箱跟本地对一遍，对不上的都记进欠账重取。
+    ///
+    /// 同步的每条线都不回头：回溯翻过的页不会重来，增量只认位点之后的变化，
+    /// 于是任何一次漏掉都是永久的——发现的时候只能把整个池子删掉重建。
+    /// 漏掉的具体原因可以一个个修，但总还会有下一个：网络抖动、偶发的 5xx、
+    /// 某个想不到的边界。所以除了修原因，还得有一条认账的路。
+    ///
+    /// 只认收件箱：它是唯一「少一封就会被看见」的视图，也是最便宜的对账对象——
+    /// 一次 list 只回 id，一页 100 封几 KB，六小时一次可以忽略不计。
+    private func auditInbox(account: String) async {
+        guard let pool = pools[account], !pool.messages.isEmpty else { return } // 池子还没建起来
+        if let last = pool.lastAuditAt, Date().timeIntervalSince(last) < Self.auditInterval { return }
+
+        let api = GmailAPI(account: account)
+        var remote: Set<String> = []
+        var pageToken: String?
+        var complete = false
+        for _ in 0 ..< Self.auditPageLimit {
+            guard let list = try? await api.listMessages(labelId: "INBOX", query: nil,
+                                                         pageToken: pageToken,
+                                                         maxResults: BackfillPolicy.pageSize) else {
+                return // 这轮没对成就不记时间，下一轮接着来
+            }
+            remote.formUnion((list.messages ?? []).map(\.id))
+            pageToken = list.nextPageToken
+            if pageToken == nil {
+                complete = true
+                break
+            }
+        }
+
+        let local = Set(messages(account: account).filter { $0.labelIds.contains("INBOX") }.map(\.id))
+        // 服务器说在收件箱、本地却不知道的：补。这是对账的主要目的。
+        var owed = remote.subtracting(local)
+        // 本地以为在收件箱、服务器却没有的：也补，本地的标签多半已经过时了。
+        // 只有整个收件箱翻完才敢这么算——翻了一半的话，「不在这几页里」不等于
+        // 「不在收件箱里」，照着删会把收件箱清空。
+        if complete { owed.formUnion(local.subtracting(remote)) }
+
+        markAudited(account)
+        guard !owed.isEmpty else { return }
+        // 两边都只有 id，谁对谁错本地判断不了，一律重取信头拿服务器的标签为准
+        remember(pending: Array(owed), account: account)
+        await resolvePending(account: account)
+    }
+
+    private func markAudited(_ account: String) {
+        guard var pool = pools[account] else { return }
+        pool.markAudited()
         pools[account] = pool
     }
 
