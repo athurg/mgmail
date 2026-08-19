@@ -68,13 +68,24 @@ struct ActivityEntry: Identifiable, Codable, Hashable, Sendable {
     /// 因限流/服务端抖动重试了几次。
     var retries: Int = 0
 
+    /// 被中断的请求在 `errorText` 里记这一句。
+    ///
+    /// 不另开字段是有原因的：`ActivityEntry` 用合成的 Codable，给它加一个非可选字段，
+    /// 磁盘上那些没有该键的旧记录就整条解不出来了。
+    static let cancelledText = "已取消"
+
     var isRunning: Bool { finishedAt == nil }
-    var isFailure: Bool { errorText != nil }
+    /// 请求是被中断的——用户切走了、窗口关了，任务跟着取消。
+    var wasCancelled: Bool { errorText == Self.cancelledText }
+    /// 取消不算失败：请求根本没发出去，那是用户自己的操作，不该弹到状态栏上
+    /// 让人以为出了错。日志里仍记着一笔，排查时看得见。
+    var isFailure: Bool { errorText != nil && !wasCancelled }
     var duration: TimeInterval? { finishedAt.map { $0.timeIntervalSince(startedAt) } }
 
     /// 状态列文案。
     var statusText: String {
         if isRunning { return "进行中" }
+        if wasCancelled { return Self.cancelledText }
         if isFailure { return statusCode.map { "失败 \($0)" } ?? "失败" }
         return statusCode.map { "成功 \($0)" } ?? "成功"
     }
@@ -162,6 +173,7 @@ final class ActivityLog: ObservableObject {
 
     /// 把错误转成一行说明。Gmail 的错误体可能很长（整段 JSON），截断存。
     nonisolated static func message(for error: Error) -> String {
+        if error.isCancellation { return ActivityEntry.cancelledText }
         let text = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         let flat = text.replacingOccurrences(of: "\n", with: " ")
         return flat.count > 300 ? String(flat.prefix(300)) + "…" : flat
@@ -190,5 +202,16 @@ final class ActivityLog: ObservableObject {
             remaining -= 1
             return true
         }
+    }
+}
+
+extension Error {
+    /// 这个错误是不是「任务被取消」。
+    ///
+    /// 两种面孔：Swift 并发自己抛的是 `CancellationError`，而已经发出去的 URLSession
+    /// 请求被取消时抛的是 `URLError.cancelled`。界面上的加载任务随视图消失而取消，
+    /// 这两种都会撞上。
+    var isCancellation: Bool {
+        self is CancellationError || (self as? URLError)?.code == .cancelled
     }
 }

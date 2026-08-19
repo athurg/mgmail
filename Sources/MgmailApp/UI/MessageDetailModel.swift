@@ -86,6 +86,9 @@ final class MessageDetailModel: ObservableObject {
             messages = loaded.thread.messages
             subject = loaded.thread.subject
         } catch {
+            // 取消不是错误：那是用户自己切走了。何况这时 model 多半已经在给下一封用，
+            // 把这条错误盖上去，界面报的就是另一封邮件加载失败。
+            guard !error.isCancellation, self.threadID == threadID else { return }
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -98,20 +101,43 @@ final class MessageDetailModel: ObservableObject {
 
     // MARK: - 修改（读/星标/归档/标签）
 
+    /// 一次标签增删作用在谁身上：哪个账号、哪串会话（或哪一封），以及池子里对应的 id。
+    ///
+    /// 单拎出来是为了「打开即已读」那条路：它把请求交给一个不随视图消失的任务，
+    /// 而 model 本身会被下一封邮件复用——到那时再读 `self`，标成已读的就是别人了。
+    private struct Target {
+        let account: String
+        let threadID: String
+        let conversation: Bool
+        let ids: [String]
+    }
+
+    private var currentTarget: Target? {
+        guard let account, let threadID else { return nil }
+        return Target(account: account, threadID: threadID,
+                      conversation: conversation, ids: messageIDs)
+    }
+
     /// 应用一次标签增删：本地池子立刻更新，请求失败则抛给调用方。
     func modify(add: [String] = [], remove: [String] = []) async throws {
-        guard let account, let threadID, let store else { return }
-        let ids = messageIDs
-        store.applyLabels(account: account, messageIDs: ids, add: add, remove: remove)
+        guard let target = currentTarget, let store else { return }
+        try await Self.apply(add: add, remove: remove, to: target, store: store)
+    }
+
+    /// 乐观更新 + 发请求，失败则拿服务器状态纠正本地。
+    private static func apply(add: [String] = [], remove: [String] = [],
+                              to target: Target, store: MailStore) async throws {
+        store.applyLabels(account: target.account, messageIDs: target.ids,
+                          add: add, remove: remove)
         do {
-            let api = GmailAPI(account: account)
-            if conversation {
-                try await api.modifyThread(id: threadID, add: add, remove: remove)
+            let api = GmailAPI(account: target.account)
+            if target.conversation {
+                try await api.modifyThread(id: target.threadID, add: add, remove: remove)
             } else {
-                try await api.modifyMessage(id: threadID, add: add, remove: remove)
+                try await api.modifyMessage(id: target.threadID, add: add, remove: remove)
             }
         } catch {
-            await store.revalidate(account: account, messageIDs: ids)
+            await store.revalidate(account: target.account, messageIDs: target.ids)
             throw error
         }
     }
@@ -177,8 +203,15 @@ final class MessageDetailModel: ObservableObject {
     }
 
     /// 打开会话时若未读则自动标记为已读。
-    func markReadOnOpenIfNeeded() async {
-        guard isUnread else { return }
-        try? await setUnread(false)
+    ///
+    /// 请求刻意不留在调用方的任务里。调用方是视图的 `.task`，点开随即切走或者关掉窗口
+    /// 它就被取消了，而本地标签在此之前已经乐观改成已读——请求没发出去，本地和服务器
+    /// 就此分家，还没有谁会发现：增量同步看不到服务器上压根没发生的变化，
+    /// 收件箱对账只比对邮件在不在收件箱，不比标签。
+    ///
+    /// 所以先把这一封的身份定下来（`Target`），再交给一个不随视图消失的任务去发。
+    func markReadOnOpenIfNeeded() {
+        guard isUnread, let target = currentTarget, let store else { return }
+        Task { try? await Self.apply(remove: ["UNREAD"], to: target, store: store) }
     }
 }
