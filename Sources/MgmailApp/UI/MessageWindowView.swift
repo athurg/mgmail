@@ -261,6 +261,6 @@ struct MessageWindowView: View {
         model.bind(to: mailStore)
         await model.open(account: target.accountID, threadID: target.threadID,
                          conversation: conversation)
-        await model.markReadOnOpenIfNeeded()
+        model.markReadOnOpenIfNeeded()
     }
 }

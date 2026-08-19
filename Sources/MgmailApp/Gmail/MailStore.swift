@@ -521,8 +521,16 @@ final class MailStore: ObservableObject {
 
     /// 拿服务器状态纠正几封邮件（本地改标签失败时用）。
     func revalidate(account: String, messageIDs: [String]) async {
-        guard !messageIDs.isEmpty,
-              let batch = await fetchMetadata(messageIDs, api: GmailAPI(account: account)) else { return }
+        guard !messageIDs.isEmpty else { return }
+        guard let batch = await fetchMetadata(messageIDs, api: GmailAPI(account: account)) else {
+            // 整趟请求就没成（断网，或者调用方的任务连着这一趟一起被取消了）。
+            // 这几封本地还留着乐观改上去、服务器却没收到的状态，欠着，下一轮同步接着纠——
+            // 不记的话没有谁会再回头看它们一眼：服务器上什么都没发生，增量同步不会提，
+            // 收件箱对账也只比对邮件在不在收件箱，不比标签。
+            remember(pending: messageIDs, account: account)
+            persist(account)
+            return
+        }
         merge(batch.messages, into: account)
         // 纠正失败的那几封本地还留着改坏的状态，欠着，下一轮同步接着纠
         remember(pending: batch.failed, account: account)
