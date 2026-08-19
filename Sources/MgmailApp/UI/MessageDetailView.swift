@@ -96,7 +96,7 @@ struct MessageDetailView: View {
         await model.open(account: selected.accountID, threadID: selected.threadID,
                          conversation: conversationView)
         // 打开即标记已读（改的是池子里的标签，列表跟着一起变）
-        await model.markReadOnOpenIfNeeded()
+        model.markReadOnOpenIfNeeded()
     }
 }
 
