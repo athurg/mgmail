@@ -1,34 +1,5 @@
 import SwiftUI
 
-/// 渲染用的单封邮件视图模型。
-struct RenderedMessage: Codable, Identifiable {
-    let id: String
-    let fromName: String
-    let fromEmail: String
-    let to: String
-    let date: Date?
-    let subject: String
-    let bodyHTML: String
-    let attachments: [Attachment]
-    /// 折叠态用的预览摘要（Gmail 提供的 snippet）。可选以兼容旧缓存解码。
-    let snippet: String?
-    /// 本封的 Message-ID 头。回复时填进 In-Reply-To，对方的客户端才能把回信
-    /// 串进原会话。可选以兼容旧缓存解码。
-    let messageIDHeader: String?
-    /// 原会话已有的 Message-ID 链（References 头）。回复时接在后面。
-    let referencesHeader: [String]?
-
-    @MainActor
-    var dateText: String { DateText.messageHeader(date) }
-
-    /// 返回替换了正文的副本。
-    func withBody(_ html: String) -> RenderedMessage {
-        RenderedMessage(id: id, fromName: fromName, fromEmail: fromEmail, to: to, date: date,
-                        subject: subject, bodyHTML: html, attachments: attachments, snippet: snippet,
-                        messageIDHeader: messageIDHeader, referencesHeader: referencesHeader)
-    }
-}
-
 /// 加载并渲染某个会话（或单封邮件）的正文。
 ///
 /// 正文是不可变的，所以规则很简单：**一封邮件（或一串会话）一辈子只拉一次**。
@@ -103,34 +74,17 @@ final class MessageDetailModel: ObservableObject {
         await fetch(account: account, threadID: threadID)
     }
 
-    /// 从服务器取正文，解析内联图片后写进缓存。一次请求拿完。
+    /// 从服务器取正文。取回、渲染、落缓存都在 `MessageBodyLoader` 里，
+    /// 这里只负责把结果搬到界面上——同一条路后台预取也在走。
     private func fetch(account: String, threadID: String) async {
         isLoading = true
         defer { isLoading = false }
         do {
-            let api = GmailAPI(account: account)
-            let raw: [GmailMessage]
-            if conversation {
-                raw = try await api.getThread(id: threadID, format: "full").messages ?? []
-            } else {
-                raw = [try await api.getMessage(id: threadID, format: "full")]
-            }
+            let loaded = try await MessageBodyLoader.load(account: account, threadID: threadID,
+                                                          conversation: conversation)
             guard self.threadID == threadID else { return } // 期间已切换
-
-            // 先把内联图片全部解析好再一次性设置，避免出现「原始 cid → 解析后」的中间态闪烁
-            var rendered = raw.map { Self.render($0) }
-            let complete: Bool
-            (rendered, complete) = await resolveInline(rendered, rawMessages: raw, account: account)
-            guard self.threadID == threadID else { return }
-
-            messages = rendered
-            subject = rendered.first?.subject ?? "（无主题）"
-            // 有内联图没换下来就先不落盘。正文缓存是「一辈子只拉一次」的，
-            // 这时候存进去，一次网络抖动造成的破图就再也没机会修好了。
-            guard complete else { return }
-            let cached = CachedThread(subject: subject, messages: rendered)
-            await MailCache.shared.saveThread(cached, account: account, threadID: threadID,
-                                              conversation: conversation)
+            messages = loaded.thread.messages
+            subject = loaded.thread.subject
         } catch {
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -140,43 +94,6 @@ final class MessageDetailModel: ObservableObject {
     func reloadBody() async {
         guard let account, let threadID else { return }
         await fetch(account: account, threadID: threadID)
-    }
-
-    /// 把正文里的 `cid:` 内联图片替换为 data URI；优先用缓存，缺失才下载并缓存。
-    ///
-    /// 第二个返回值是「有没有全换下来」。有一张没换成，这份正文就不该进缓存——
-    /// 详见 `fetch` 里落盘前的那道判断。
-    private func resolveInline(_ rendered: [RenderedMessage], rawMessages: [GmailMessage],
-                               account: String) async -> (messages: [RenderedMessage], complete: Bool) {
-        var result = rendered
-        var complete = true
-        for message in rawMessages {
-            let inlines = MimeParser.inlineImages(message.payload)
-            guard !inlines.isEmpty,
-                  let idx = result.firstIndex(where: { $0.id == message.id }),
-                  result[idx].bodyHTML.contains("cid:") else { continue }
-
-            var html = result[idx].bodyHTML
-            for img in inlines where html.contains("cid:\(img.contentID)") {
-                // 用 Content-ID 而不是 attachmentId 做键：后者是 Gmail 每次 get 现发的临时票据，
-                // 同一张图每次拉回来都不一样，拿它当键等于缓存永远不命中，每次都重下一遍。
-                let key = "\(message.id)_\(img.contentID)"
-                let uri: String
-                if let cached = await MailCache.shared.inlineDataURI(account: account, key: key) {
-                    uri = cached
-                } else if let data = try? await GmailAPI(account: account)
-                    .getAttachment(messageID: message.id, attachmentId: img.attachmentId) {
-                    uri = "data:\(img.mimeType);base64,\(data.base64EncodedString())"
-                    await MailCache.shared.saveInlineDataURI(uri, account: account, key: key)
-                } else {
-                    complete = false
-                    continue
-                }
-                html = html.replacingOccurrences(of: "cid:\(img.contentID)", with: uri)
-            }
-            result[idx] = result[idx].withBody(html)
-        }
-        return (result, complete)
     }
 
     // MARK: - 修改（读/星标/归档/标签）
@@ -263,43 +180,5 @@ final class MessageDetailModel: ObservableObject {
     func markReadOnOpenIfNeeded() async {
         guard isUnread else { return }
         try? await setUnread(false)
-    }
-
-    nonisolated static func render(_ message: GmailMessage) -> RenderedMessage {
-        let fromHeader = MimeParser.header(message.payload, "From") ?? ""
-        let from = EmailAddress(header: fromHeader)
-        let to = MimeParser.header(message.payload, "To") ?? ""
-        let subject = MimeParser.header(message.payload, "Subject") ?? "（无主题）"
-
-        let (html, text) = MimeParser.extractBody(message.payload)
-        let body: String
-        if let html, !html.isEmpty {
-            body = html
-        } else if let text, !text.isEmpty {
-            body = "<div style=\"white-space:pre-wrap\">\(escapeHTML(text))</div>"
-        } else {
-            body = "<p style=\"color:#888\">（此邮件没有可显示的正文）</p>"
-        }
-
-        return RenderedMessage(
-            id: message.id,
-            fromName: from.name,
-            fromEmail: from.email,
-            to: to,
-            date: message.date,
-            subject: subject,
-            bodyHTML: body,
-            attachments: MimeParser.attachments(message.payload, messageID: message.id),
-            snippet: message.snippet,
-            messageIDHeader: MimeParser.header(message.payload, "Message-ID"),
-            referencesHeader: MimeParser.header(message.payload, "References")?
-                .split(whereSeparator: \.isWhitespace).map(String.init)
-        )
-    }
-
-    nonisolated static func escapeHTML(_ s: String) -> String {
-        s.replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
     }
 }
