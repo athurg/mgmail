@@ -28,6 +28,7 @@ struct MgmailApp: App {
         .commands {
             SidebarCommands()
             NewMailCommand(appState: appState)
+            SearchMailCommand(appState: appState)
             // 账号已在「设置」里统一管理，不再单独开菜单。
             // 「活动」窗口由下面的 Window 场景自动出现在「窗口」菜单里（⌘0）。
         }
@@ -105,6 +106,22 @@ struct NewMailCommand: Commands {
             }
             .keyboardShortcut("n", modifiers: .command)
             .disabled(appState.composeAccount == nil)
+        }
+    }
+}
+
+/// 「编辑 → 搜索邮件」（⌘F）。
+///
+/// 只把光标送进中栏的搜索框，搜什么、怎么搜都在那边——这里够不着视图的焦点状态，
+/// 所以经 `AppState` 转一手（和「删除」「开新窗口」那几个请求一个路数）。
+struct SearchMailCommand: Commands {
+    @ObservedObject var appState: AppState
+
+    var body: some Commands {
+        CommandGroup(after: .textEditing) {
+            Button("搜索邮件") { appState.requestSearchFocus() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(appState.selection == nil)
         }
     }
 }
