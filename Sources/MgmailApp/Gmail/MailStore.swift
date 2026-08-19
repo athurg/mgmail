@@ -218,6 +218,7 @@ final class MailStore: ObservableObject {
         syncing.insert(account)
         defer { syncing.remove(account) }
 
+        var arrived: [PooledMessage] = []
         // 池子还没建起来时没有「变化」可言，直接进回溯
         if pools[account]?.cursors[""] != nil {
             let outcome = await MailSync.incremental(account: account)
@@ -227,9 +228,11 @@ final class MailStore: ObservableObject {
                 revision += 1
             } else {
                 apply(outcome, to: account)
+                let arrival = await fetchNew(outcome.added, account: account)
+                arrived = arrival.fresh
                 // 信头确实取回来了才把位点推过去。取不回来就让位点停在原地，
                 // 下一轮从同一个起点重来一次——多拉一次总好过邮件永远不出现。
-                if await fetchNew(outcome.added, account: account) {
+                if arrival.complete {
                     await MailSync.commit(outcome, account: account)
                 }
             }
@@ -238,6 +241,9 @@ final class MailStore: ObservableObject {
         await backfill(account: account, scope: nil)
         await auditInbox(account: account)
         persist(account)
+        // 正文预取排在最后，也只排在最后：它是「打开时不用等」的提前量，
+        // 位点、欠账、对账这些关乎邮件会不会丢的事一件都不该等它。
+        await BodyPrefetch.run(arrived, account: account)
     }
 
     /// 垃圾邮件 / 废纸篓：Gmail 默认不返回它们，点进去时才单独拉。
@@ -480,30 +486,37 @@ final class MailStore: ObservableObject {
         revision += 1
     }
 
+    /// 一批新邮件的落地结果。
+    struct Arrival {
+        /// 信头是不是确实取回来了——位点要等这个点头才能往前推。
+        var complete = true
+        /// 真正新到的那几封（池子里原本没有的）。通知和正文预取都只认这一批。
+        var fresh: [PooledMessage] = []
+    }
+
     /// 新到的邮件 history 只给了 id，得把信头取回来才能显示。
     ///
     /// 这里也是新邮件通知唯一的来源：`added` 只装 `history.messagesAdded`，
     /// 回溯拉取走的是 `merge` 那条线，所以首次同步几百封不会变成几百条通知。
     /// 通知内容要的发件人和主题就在这批 metadata 里，不必再发一次请求。
-    /// 返回信头是否确实取回来了——位点要等这个点头才能往前推。
-    @discardableResult
-    private func fetchNew(_ added: [String: String], account: String) async -> Bool {
+    /// 正文预取搭的也是这条线，理由相同：加个账号不该先下几百封正文。
+    private func fetchNew(_ added: [String: String], account: String) async -> Arrival {
         let ids = Array(added.keys)
-        guard !ids.isEmpty else { return true }
+        guard !ids.isEmpty else { return Arrival() }
         // 池子里已经有的也要重取。`MailSync` 把 added 那几封的标签变动删掉了，
         // 理由是「信头会连同最新标签一起回来」——那就不能反过来因为池里已经有它
         // 而跳过取信头，否则这一轮它的标签变动两头都没人管，会一直停在旧值上。
         let known = Set(ids.filter { pools[account]?.messages[$0] != nil })
         guard let batch = await fetchMetadata(ids, api: GmailAPI(account: account)) else {
-            return false
+            return Arrival(complete: false)
         }
         merge(batch.messages, into: account)
         // 个别没取回来的记进欠账，位点就可以照常往前推——不会再有邮件因此消失
         remember(pending: batch.failed, account: account)
-        // 通知只报真正新到的：重取回来的老邮件不该再弹一次
-        NewMailNotifier.shared.enqueue(batch.messages.filter { !known.contains($0.id) },
-                                       account: account)
-        return true
+        // 只认真正新到的：重取回来的老邮件不该再弹一次通知，正文多半也早就在缓存里
+        let fresh = batch.messages.filter { !known.contains($0.id) }
+        NewMailNotifier.shared.enqueue(fresh, account: account)
+        return Arrival(fresh: fresh)
     }
 
     /// 拿服务器状态纠正几封邮件（本地改标签失败时用）。

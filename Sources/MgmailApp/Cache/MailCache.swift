@@ -62,6 +62,15 @@ actor MailCache {
         save(thread, account: account, kind: conversation ? "thread" : "message", key: threadID)
     }
 
+    /// 只问「存过没有」，不读也不 touch。
+    ///
+    /// 预取拿它跳过已经有的正文。走 `thread(...)` 也能问出来，但那条路会把文件的
+    /// 使用时间推到此刻——一封没人打开过的邮件会因为被预取查过而在回收时显得很新。
+    func hasThread(account: String, threadID: String, conversation: Bool = true) -> Bool {
+        let url = fileURL(account: account, kind: conversation ? "thread" : "message", key: threadID)
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
     // MARK: - 内联图片（data URI，按 消息+附件 id 缓存，内容不变可长期复用）
 
     func inlineDataURI(account: String, key: String) -> String? {
