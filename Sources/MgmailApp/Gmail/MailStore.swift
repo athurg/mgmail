@@ -8,11 +8,18 @@ struct PooledMessage: Codable, Identifiable, Hashable {
     let id: String
     let threadId: String
     var from: String
+    /// 发件人地址（`from` 是显示名）。列表上不显示它，是搜索要用——
+    /// 「某个域名来的信」是最常用的一种搜法，而显示名里通常根本没有地址。
+    var fromEmail: String = ""
     var subject: String
     var snippet: String
     var date: Date?
     var hasAttachment: Bool
     var labelIds: [String]
+
+    /// 折叠好的可搜文本。**不进磁盘**：它是那几个字段的纯函数，读盘时现算一次，
+    /// 比让 pool.json 大出一倍、每次启动多解一倍的 JSON 划算。见 `encode(to:)`。
+    private(set) var searchText: SearchableText
 
     var isUnread: Bool { labelIds.contains("UNREAD") }
     var isStarred: Bool { labelIds.contains("STARRED") }
@@ -20,13 +27,63 @@ struct PooledMessage: Codable, Identifiable, Hashable {
     init(_ message: GmailMessage) {
         id = message.id
         threadId = message.threadId ?? message.id
-        from = MimeParser.header(message.payload, "From")
-            .map { EmailAddress(header: $0).display } ?? "（未知发件人）"
+        let sender = MimeParser.header(message.payload, "From").map { EmailAddress(header: $0) }
+        from = sender?.display ?? "（未知发件人）"
+        fromEmail = sender?.email ?? ""
         subject = MimeParser.header(message.payload, "Subject") ?? "（无主题）"
         snippet = message.snippet ?? ""
         date = message.date
         hasAttachment = !MimeParser.attachments(message.payload, messageID: message.id).isEmpty
         labelIds = message.labelIds ?? []
+        searchText = SearchableText(from: from, fromEmail: fromEmail,
+                                    subject: subject, snippet: snippet)
+    }
+
+    /// 手写解码，理由和 `AccountPool` 那边一模一样：给邮件加字段时，旧的 pool.json
+    /// 仍然读得进来。合成的解码器缺一个键就整份抛错，而池子是嵌在 pool.json 里的
+    /// 一个字典——一封邮件解不出来，整个账户的池子就跟着没了。
+    ///
+    /// 池子只增不减，旧邮件没人会回头重取，所以缺的字段只能就地拿现有的顶上：
+    /// `fromEmail` 退回显示名（本来就没有显示名的信，它存的就是地址）。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        threadId = try c.decode(String.self, forKey: .threadId)
+        from = try c.decodeIfPresent(String.self, forKey: .from) ?? "（未知发件人）"
+        fromEmail = try c.decodeIfPresent(String.self, forKey: .fromEmail) ?? from
+        subject = try c.decodeIfPresent(String.self, forKey: .subject) ?? "（无主题）"
+        snippet = try c.decodeIfPresent(String.self, forKey: .snippet) ?? ""
+        date = try c.decodeIfPresent(Date.self, forKey: .date)
+        hasAttachment = try c.decodeIfPresent(Bool.self, forKey: .hasAttachment) ?? false
+        labelIds = try c.decodeIfPresent([String].self, forKey: .labelIds) ?? []
+        searchText = SearchableText(from: from, fromEmail: fromEmail,
+                                    subject: subject, snippet: snippet)
+    }
+
+    /// 手写编码，只为把 `searchText` 挡在磁盘外面。
+    ///
+    /// 代价是加字段时这里也得记着加一行——漏了就是那个字段永远存不下去。
+    /// 换来的是池子的体积和解码时间都不受搜索这件事影响。
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(threadId, forKey: .threadId)
+        try c.encode(from, forKey: .from)
+        try c.encode(fromEmail, forKey: .fromEmail)
+        try c.encode(subject, forKey: .subject)
+        try c.encode(snippet, forKey: .snippet)
+        try c.encodeIfPresent(date, forKey: .date)
+        try c.encode(hasAttachment, forKey: .hasAttachment)
+        try c.encode(labelIds, forKey: .labelIds)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, threadId, from, fromEmail, subject, snippet, date, hasAttachment, labelIds
+    }
+
+    /// 参与匹配的东西。搜索本身不认识 `PooledMessage`，见 `MailSearch.swift`。
+    var searchable: SearchableMail {
+        SearchableMail(text: searchText, labelIds: labelIds, hasAttachment: hasAttachment)
     }
 }
 
@@ -34,6 +91,13 @@ extension MailboxQuery {
     /// 这封邮件属不属于该邮箱。判断只看标签，见 `MailboxQuery` 的说明。
     func belongs(_ message: PooledMessage) -> Bool {
         labelsBelong(message.labelIds)
+    }
+}
+
+extension MailSearchQuery {
+    /// 这封邮件命不命中当前的搜索词。
+    func matches(_ message: PooledMessage) -> Bool {
+        matches(message.searchable)
     }
 }
 

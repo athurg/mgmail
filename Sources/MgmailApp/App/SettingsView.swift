@@ -13,6 +13,8 @@ enum SettingsKey {
     static let settingsTab = "settings.selectedTab"
     /// 列表右上角的已读/未读过滤（记住上次选择，非设置窗口里的项）。
     static let readFilter = "threadList.readFilter"
+    /// 本地搜索的范围：当前邮箱还是所有邮件（记住上次选择，非设置窗口里的项）。
+    static let searchScope = "threadList.searchScope"
     /// 每个账户最多回溯多少封邮件。
     static let backfillLimit = "sync.backfillLimit"
     /// 每个账户最多回溯多少天。

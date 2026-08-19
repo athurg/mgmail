@@ -110,6 +110,21 @@ final class ThreadListModel: ObservableObject {
     /// 是否按会话显示；false 时每行是一封独立邮件，行 id 为 messageId。
     private(set) var conversation = true
     private(set) var filter: ReadFilter = .all
+    /// 当前的本地搜索词（空即没在搜）。
+    private(set) var search = MailSearchQuery.empty
+    /// 搜索范围：只搜当前邮箱，还是搜遍所有邮件。
+    private(set) var searchScope: SearchScope = .mailbox
+    /// 放宽到账号或所有账号时用的归属判断（仍然把垃圾邮件和废纸篓摘出去）。
+    private let allMailQuery = MailboxQuery.resolve(labelID: StandardMailbox.allMailID)
+
+    /// 正在搜索。
+    var isSearching: Bool { !search.isEmpty }
+
+    /// 当前该用哪套归属判断：搜索范围一旦超出「当前邮箱」，就不再受选中的邮箱限制。
+    /// 参与计算的是哪几个账号由调用方定（见 `ThreadListView.searchAccounts`）。
+    private var activeQuery: MailboxQuery {
+        isSearching && !searchScope.isMailbox ? allMailQuery : boxQuery
+    }
 
     /// 池子里的邮件一变就重算。
     func bind(to store: MailStore) {
@@ -145,12 +160,15 @@ final class ThreadListModel: ObservableObject {
         }
     }
 
-    /// 切换邮箱 / 显示方式 / 过滤器。纯本地，不联网。
-    func configure(accounts: [String], labelID: String, conversation: Bool, filter: ReadFilter) {
+    /// 切换邮箱 / 显示方式 / 过滤器 / 搜索词。纯本地，不联网。
+    func configure(accounts: [String], labelID: String, conversation: Bool, filter: ReadFilter,
+                   search: String = "", searchScope: SearchScope = .mailbox) {
         self.accounts = accounts
         self.labelID = labelID
         self.conversation = conversation
         self.filter = filter
+        self.search = MailSearchQuery.parse(search)
+        self.searchScope = searchScope
         boxQuery = MailboxQuery.resolve(labelID: labelID)
         loadError = nil
         recompute()
@@ -163,6 +181,8 @@ final class ThreadListModel: ObservableObject {
         recomputeTask = nil
         lastRecompute = .now
         guard let store else { summaries = []; return }
+        let box = activeQuery
+        let query = search
         var rows: [ThreadSummary] = []
         for account in accounts {
             let all = store.messages(account: account)
@@ -171,14 +191,17 @@ final class ThreadListModel: ObservableObject {
                 // 而计数、标签、状态取的是整串——和 Gmail、Apple Mail 的会话语义一致。
                 // （反过来先过滤再分组的话，收件箱里那串「3 封」会缩水成「在收件箱的那 1 封」。）
                 for (thread, group) in Dictionary(grouping: all, by: \.threadId) {
-                    guard group.contains(where: { boxQuery.belongs($0) }) else { continue }
+                    guard group.contains(where: { box.belongs($0) }) else { continue }
+                    // 搜索同理按整串算：串里有一封命中，整串就是结果。行上显示的
+                    // 本来就是整串，只把命中的那一封抠出来反而对不上下文。
+                    guard query.isEmpty || group.contains(where: { query.matches($0) }) else { continue }
                     let sorted = group.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
                     if let row = ThreadSummary(thread: thread, messages: sorted, account: account) {
                         rows.append(row)
                     }
                 }
             } else {
-                rows += all.filter { boxQuery.belongs($0) }
+                rows += all.filter { box.belongs($0) && (query.isEmpty || query.matches($0)) }
                     .map { ThreadSummary(message: $0, account: account) }
             }
         }
@@ -213,7 +236,7 @@ final class ThreadListModel: ObservableObject {
                                   conversation: conversation)
         labels.formUnion(add)
         labels.subtract(remove)
-        return boxQuery.labelsBelong(Array(labels))
+        return activeQuery.labelsBelong(Array(labels))
     }
 
     // MARK: - 操作（本地先改，再发请求；失败才回头问服务器）
