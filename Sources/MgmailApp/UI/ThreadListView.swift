@@ -11,6 +11,13 @@ struct ThreadListView: View {
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
     /// 已读/未读过滤（右上角过滤器，记住上次选择）。
     @AppStorage(SettingsKey.readFilter) private var readFilterRaw = ReadFilter.all.rawValue
+    /// 搜索范围（记住上次选择：一直想搜全部的人不必每次都改一遍）。
+    @AppStorage(SettingsKey.searchScope) private var searchScopeRaw = SearchScope.mailbox.rawValue
+    /// 搜索框里的内容。刻意不持久化——搜索是一次性的动作，
+    /// 下次打开应用还带着上次那个词，只会让人以为邮件丢了。
+    @State private var searchText = ""
+    /// 真正交给列表的搜索词。跟着输入延后一点点，见 `searchDebounce`。
+    @State private var debouncedSearch = ""
     /// 行的动作中枢（长期存活，保证行视图的字段稳定可比较，详见 ThreadRowCoordinator）。
     @ObservedObject private var rows = ThreadRowCoordinator.shared
     /// 拖拽状态：只有列表和侧栏订阅它，拖动时不会连累详情栏重绘。
@@ -21,6 +28,28 @@ struct ThreadListView: View {
     @State private var didColdStart = false
 
     private var readFilter: ReadFilter { ReadFilter(rawValue: readFilterRaw) ?? .all }
+    /// 当前范围。存的账号若已经不在（账号被移除、或换了分组），回落到「当前邮箱」——
+    /// 让范围条停在一个已经不存在的账号上，搜出来永远是空的。
+    private var searchScope: SearchScope {
+        let scope = SearchScope(rawValue: searchScopeRaw) ?? .mailbox
+        if case .account(let id) = scope,
+           !appState.accounts.contains(where: { $0.id == id }) {
+            return .mailbox
+        }
+        return scope
+    }
+
+    private var searchScopeBinding: Binding<SearchScope> {
+        Binding(get: { searchScope }, set: { searchScopeRaw = $0.rawValue })
+    }
+
+    /// 范围条上列哪几个账号：当前分组里的这些，和侧栏对得上。
+    /// 分组之外的账号走「所有账号」那一档。
+    private var scopeAccounts: [Account] { appState.activeAccounts }
+
+    /// 每敲一个字就把整个池子分组、排序一遍太贵，隔一小会儿再算。
+    /// 这点延迟在输入过程中察觉不到，停手之后结果是立刻出来的。
+    private static let searchDebounce: Duration = .milliseconds(160)
 
     /// 当前选择涉及的账号（聚合视图为当前分组内账号）。
     private var selectionAccounts: [String] {
@@ -29,10 +58,23 @@ struct ThreadListView: View {
         return appState.activeAccounts.map(\.id)
     }
 
-    /// 用户标签映射（"账号\t labelId" → 标签），聚合视图跨账号，供行内 chip 使用。
+    /// 这一次列表计算涉及哪些账号。
+    ///
+    /// 不搜的时候就是当前选择涉及的那些；搜索时按范围放宽——这是三档范围里
+    /// 后两档的全部含义（归属判断那半边在 `ThreadListModel.activeQuery`）。
+    private var searchAccounts: [String] {
+        guard !debouncedSearch.isEmpty else { return selectionAccounts }
+        switch searchScope {
+        case .mailbox: return selectionAccounts
+        case .account(let id): return [id]
+        case .all: return appState.accounts.map(\.id)
+        }
+    }
+
+    /// 用户标签映射（"账号\t labelId" → 标签），跨账号，供行内 chip 使用。
     private var labelMap: [String: GmailLabel] {
         var map: [String: GmailLabel] = [:]
-        for account in selectionAccounts {
+        for account in searchAccounts {
             for label in labelStore.userLabels(for: account) {
                 map["\(account)\t\(label.id)"] = label
             }
@@ -41,35 +83,33 @@ struct ThreadListView: View {
     }
 
     var body: some View {
-        Group {
-            if appState.selection == nil {
-                ContentUnavailableView("未选择邮箱", systemImage: "tray")
-            } else if model.summaries.isEmpty && isFirstLoad {
-                ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.summaries.isEmpty {
-                ContentUnavailableView {
-                    Label(emptyTitle, systemImage: readFilter == .all ? "tray" : "line.3.horizontal.decrease.circle")
-                } description: {
-                    Text(emptyHint)
-                }
-            } else {
-                list
-            }
-        }
+        content
         .navigationTitle(appState.selection?.labelName ?? "收件箱")
         // 这里不再放刷新按钮：自动刷新有定时器，手动刷新在侧栏账号行上，
         // 而「正在联网」由窗口底部的活动栏统一交代。
+        //
+        // 搜索框摆在窗口右上角（仿 Apple Mail），不占列表的地方。中栏的工具栏项
+        // 在 macOS 的分栏视图里本来就落在标题栏最右端。
         .toolbar {
-            ToolbarItem { filterMenu }
+            ToolbarItemGroup {
+                searchCount
+                scopeMenu
+                filterMenu
+            }
         }
+        // 搜索框摆在窗口右上角，交给系统的 searchable：工具栏里放不得自己包的
+        // NSView——SwiftUI 重建工具栏宿主视图时会 endEditing，而结束编辑又会引起
+        // 一次布局，转回来再重建一次，主线程就此转死（回车最容易点着这个循环）。
+        .searchable(text: $searchText, placement: .toolbar, prompt: "搜索邮件")
         // 选择/显示方式/过滤器变化：纯本地重算，不联网
         .onChange(of: viewKey, initial: true) { _, _ in
             // 协调器的引用在这里就绪，不依赖列表有没有内容（空邮箱时 list 不会被求值）
             rows.model = model
             rows.appState = appState
             model.bind(to: mailStore)
-            model.configure(accounts: selectionAccounts, labelID: appState.selection?.labelID ?? "",
-                            conversation: conversationView, filter: readFilter)
+            model.configure(accounts: searchAccounts, labelID: appState.selection?.labelID ?? "",
+                            conversation: conversationView, filter: readFilter,
+                            search: debouncedSearch, searchScope: searchScope)
             // 垃圾邮件/废纸篓不在账户级拉取的返回范围内，第一次点进去才去要
             if let selection = appState.selection {
                 Task { await ensureSpecialMailbox(selection) }
@@ -102,6 +142,32 @@ struct ThreadListView: View {
                 }
             }
         }
+        // 输入防抖：真正参与重算的是 debouncedSearch
+        .task(id: searchText) {
+            if searchText.isEmpty {
+                debouncedSearch = ""
+                return
+            }
+            try? await Task.sleep(for: Self.searchDebounce)
+            guard !Task.isCancelled else { return }
+            debouncedSearch = searchText
+        }
+        // 「编辑 → 搜索邮件」（⌘F）
+        .onChange(of: appState.searchFocusRequest) { _, _ in
+            SearchFieldFocus.begin()
+        }
+        // 「所有账号」要搜到分组之外的账号，它们的池子未必恢复过（列表那条 task
+        // 只管当前分组）。恢复是纯读盘，且对已经在内存里的账号是空操作。
+        .task(id: searchScopeRaw) {
+            guard case .all = searchScope else { return }
+            await mailStore.restore(accounts: appState.accounts.map(\.id))
+        }
+        // 换邮箱就把搜索词丢掉：搜索是一次性的动作，而点侧栏是「换个地方看」。
+        // 留着上一次的词，新邮箱看起来会是空的，而空的原因藏在上面那个小框里。
+        .onChange(of: appState.selection) { _, _ in
+            guard !searchText.isEmpty else { return }
+            clearSearch()
+        }
         .onChange(of: conversationView) { _, _ in
             // 两种模式的行 id 语义不同（threadId ↔ messageId），旧选择必须清空
             appState.selectedThreads = []
@@ -130,6 +196,112 @@ struct ThreadListView: View {
                                           from: $0.from, subject: $0.subject, date: $0.date) }
             Task { @MainActor in appState.selectedInfos = infos }
         }
+    }
+
+    // MARK: - 主体
+
+    @ViewBuilder
+    private var content: some View {
+        if appState.selection == nil {
+            ContentUnavailableView("未选择邮箱", systemImage: "tray")
+        } else if model.summaries.isEmpty && isFirstLoad {
+            ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.summaries.isEmpty && !debouncedSearch.isEmpty {
+            ContentUnavailableView {
+                Label("没有找到匹配的邮件", systemImage: "magnifyingglass")
+            } description: {
+                Text(searchEmptyHint)
+            }
+        } else if model.summaries.isEmpty {
+            ContentUnavailableView {
+                Label(emptyTitle, systemImage: readFilter == .all ? "tray" : "line.3.horizontal.decrease.circle")
+            } description: {
+                Text(emptyHint)
+            }
+        } else {
+            list
+        }
+    }
+
+    // MARK: - 搜索框（窗口右上角，纯本地，不发任何请求）
+
+    /// 搜索范围。做成下拉而不是摊开的范围条：账号一多，摊开就把中栏顶出去了。
+    ///
+    /// 只在搜着的时候出现——不搜的时候它没有意义，白占工具栏。
+    @ViewBuilder
+    private var scopeMenu: some View {
+        if !debouncedSearch.isEmpty {
+            Menu {
+                Picker("搜索范围", selection: searchScopeBinding) {
+                    Text("当前邮箱").tag(SearchScope.mailbox)
+                    Divider()
+                    ForEach(scopeAccounts) { account in
+                        Text(account.displayName).tag(SearchScope.account(account.id))
+                    }
+                    // 只有一个账号时，「所有账号」和它自己是同一件事，不必多摆一档
+                    if appState.accounts.count > 1 {
+                        Divider()
+                        Text("所有账号").tag(SearchScope.all)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                Text(scopeTitle)
+                    .lineLimit(1)
+                    // 账号那档是邮箱地址，掐中间：两头都是认人的地方
+                    .truncationMode(.middle)
+            }
+            .frame(maxWidth: 150)
+            .help("搜索范围：\(scopeTitle)")
+        }
+    }
+
+    /// 当前范围叫什么（下拉按钮上显示的那行字）。
+    private var scopeTitle: String {
+        switch searchScope {
+        case .mailbox: return "当前邮箱"
+        case .account(let id): return appState.accounts.first { $0.id == id }?.displayName ?? id
+        case .all: return "所有账号"
+        }
+    }
+
+    /// 搜到几条。摆在搜索框左边，只在搜着的时候出现。
+    @ViewBuilder
+    private var searchCount: some View {
+        if !debouncedSearch.isEmpty {
+            Text(model.summaries.isEmpty ? "没有结果" : "\(model.summaries.count) 个结果")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func clearSearch() {
+        searchText = ""
+        debouncedSearch = ""
+    }
+
+    /// 搜不到时把话说清楚：搜索范围本来就只有本地那一段。
+    private var searchEmptyHint: String {
+        var lines = ["搜的是本地已同步的邮件，只看发件人、主题和摘要——正文不参与。",
+                     "可以用 from: subject: is:unread is:starred has:attachment 限定，"
+                     + "多个条件是「且」，带空格的短语加引号。"]
+        switch searchScope {
+        case .mailbox:
+            lines.append("把范围换成某个账号，可以搜遍它的全部邮件，不再受当前邮箱限制。")
+        case .account(let id):
+            let name = appState.accounts.first { $0.id == id }?.displayName ?? id
+            if appState.accounts.count > 1 {
+                lines.append("这一档只搜「\(name)」，换成「所有账号」可以搜得更宽。")
+            }
+        case .all:
+            break
+        }
+        if let oldest = oldestBackfillDate {
+            lines.append("本地有 \(DateText.fullDate(oldest)) 至今的邮件，更早的要在「设置 → 同步」里调大回溯范围。")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private var list: some View {
@@ -275,7 +447,7 @@ struct ThreadListView: View {
 
     /// 当前视图涉及的账号里，回溯得最浅的那个（多账号聚合时，短板决定了能看到多早）。
     private var oldestBackfillDate: Date? {
-        selectionAccounts.compactMap { mailStore.oldestDate(account: $0) }.max()
+        searchAccounts.compactMap { mailStore.oldestDate(account: $0) }.max()
     }
 
     /// 垃圾邮件 / 废纸篓：Gmail 的列表接口默认不返回，第一次点进去时单独拉一次。
@@ -339,23 +511,30 @@ struct ThreadListView: View {
             .map { MailPlacement(labels: $0.labelIds) })
     }
 
-    /// 聚合视图（accountID 为 nil）时给每行一个来源账号徽标。
+    /// 列表里不止一个账号时，给每行一个来源账号徽标。
+    ///
+    /// 判断依据是「这次实际算了哪几个账号」而不是「是不是聚合视图」：
+    /// 在某个账号的收件箱里把搜索范围放到「所有账号」，结果里就会混进别人的邮件，
+    /// 那时候不标出来，看到的人只会以为这封信也是当前账号的。
     private func badge(for summary: ThreadSummary) -> Account? {
-        guard appState.selection?.accountID == nil else { return nil }
+        guard searchAccounts.count > 1 else { return nil }
         return appState.accounts.first { $0.id == summary.accountID }
     }
 
-    /// 重算列表的依据：邮箱选择 + 参与的账号 + 显示方式 + 过滤。全是本地计算。
+    /// 重算列表的依据：邮箱选择 + 参与的账号 + 显示方式 + 过滤 + 搜索。全是本地计算。
     private struct ViewKey: Hashable {
         let selection: MailboxSelection?
         let accounts: [String]
         let conversation: Bool
         let filter: String
+        let search: String
+        let scope: String
     }
 
     private var viewKey: ViewKey {
-        ViewKey(selection: appState.selection, accounts: selectionAccounts,
-                conversation: conversationView, filter: readFilterRaw)
+        ViewKey(selection: appState.selection, accounts: searchAccounts,
+                conversation: conversationView, filter: readFilterRaw,
+                search: debouncedSearch, scope: searchScopeRaw)
     }
 }
 
