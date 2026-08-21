@@ -63,6 +63,18 @@ struct MgmailApp: App {
         // 不进「窗口 → 新建」菜单：这扇窗只能从某一封具体的邮件上开出来
         .commandsRemoved()
 
+        // 「查看原始邮件」窗口。窗口值是那一封的账号 + 邮件 id，
+        // 同一封再看一次时 SwiftUI 认这个值，把开着的那扇拿到前台而不是再开一扇。
+        WindowGroup(id: RawSourceWindow.id, for: RawSourceTarget.self) { $target in
+            if let target {
+                RawSourceView(target: target)
+                    .environmentObject(mailStore)
+            }
+        }
+        .defaultSize(width: 760, height: 620)
+        // 不进「窗口 → 新建」菜单：这扇窗只能从某一封具体的邮件上开出来
+        .commandsRemoved()
+
         // 网络活动日志（仿 Apple Mail 的「活动」窗口，⌘0）。单例窗口，不跟主窗口走。
         Window("活动", id: ActivityWindow.id) {
             ActivityLogView()

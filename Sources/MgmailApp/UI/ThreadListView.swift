@@ -185,6 +185,12 @@ struct ThreadListView: View {
             openWindow(id: MessageWindow.id,
                        value: SelectedThread(accountID: request.account, threadID: request.id))
         }
+        // 右键「查看原始邮件」：和上面开独立窗口一个路数，openWindow 只有视图里够得着
+        .onChange(of: appState.rawSourceRequest) { _, request in
+            guard let request else { return }
+            openWindow(id: RawSourceWindow.id,
+                       value: RawSourceTarget(accountID: request.account, messageID: request.id))
+        }
         .onChange(of: appState.selectedThreads) { _, sel in
             // 同步选中项摘要（供右栏多选叠加卡片），保持列表顺序。
             // 必须推迟一拍再写回：这里仍处在 NSTableView 的选择回调里，
@@ -611,6 +617,7 @@ private struct ThreadListRow: View {
         let suffix = n > 1 ? "（\(n) 封）" : ""
         // 双击是这个功能的主入口，但双击本身看不见，菜单里得留个能被发现的说法
         Button("在新窗口中打开") { rows.openInWindow(summary.key) }
+        Button("查看原始邮件") { rows.showRawSource(summary) }
         Divider()
         Button((summary.isUnread ? "标记为已读" : "标记为未读") + suffix) { rows.toggleUnread(summary) }
         Button((summary.isStarred ? "取消旗标" : "旗标") + suffix) { rows.toggleStar(summary) }

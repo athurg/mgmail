@@ -227,10 +227,12 @@ struct MessageWindowView: View {
                     Text(message.dateText).foregroundStyle(.secondary)
                 }
             }
-            if !message.to.isEmpty {
+            // 收件人、抄送、密送——有内容的才有这一行，规则见 `RenderedMessage.recipientFields`。
+            // 这扇窗是专门钉着一封信看的，抄送名单值得摊开，但也不能占掉半屏，所以封到三行。
+            ForEach(message.recipientFields) { field in
                 GridRow {
-                    Text("收件人").foregroundStyle(.tertiary)
-                    Text(message.to).foregroundStyle(.secondary).lineLimit(1)
+                    Text(field.label).foregroundStyle(.tertiary)
+                    Text(field.value).foregroundStyle(.secondary).lineLimit(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -240,6 +242,17 @@ struct MessageWindowView: View {
         .padding(.horizontal, 16)
         .padding(.top, 10)
         .padding(.bottom, 8)
+        // 信头是几段文字加空白，空白处默认不接鼠标；不补一块形状的话，
+        // 右键点在名字之间的空当上什么也不会弹。
+        .contentShape(Rectangle())
+        // 和右栏卡片一样，原文入口挂在这封信自己的信头上
+        .contextMenu {
+            Button("查看原始邮件") {
+                openWindow(id: RawSourceWindow.id,
+                           value: RawSourceTarget(accountID: model.account ?? "",
+                                                  messageID: message.id))
+            }
+        }
     }
 
     /// 一组悬停才现身的标题栏按钮该长什么样：裸图标、暗一号的颜色、淡入淡出。

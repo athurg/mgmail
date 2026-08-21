@@ -81,6 +81,10 @@ final class AppState: ObservableObject {
     @Published var detachRequest: ThreadRequest?
     private var detachToken = 0
 
+    /// 右键「查看原始邮件」发来的请求，由中栏开那扇窗（`id` 是邮件 id，不是会话 id）。
+    @Published var rawSourceRequest: ThreadRequest?
+    private var rawSourceToken = 0
+
     /// 头像缓存更新计数（下载完成后自增，驱动头像视图刷新）。
     @Published var avatarReloadToken = 0
 
@@ -107,6 +111,12 @@ final class AppState: ObservableObject {
     func requestDetach(account: String, id: String) {
         detachToken += 1
         detachRequest = ThreadRequest(account: account, id: id, token: detachToken)
+    }
+
+    /// 请求打开某一封邮件的原文窗口。`id` 必须是邮件 id：原文是一封信一份，会话没有。
+    func requestRawSource(account: String, messageID: String) {
+        rawSourceToken += 1
+        rawSourceRequest = ThreadRequest(account: account, id: messageID, token: rawSourceToken)
     }
 
     /// 请求把光标放进中栏的搜索框（⌘F）。

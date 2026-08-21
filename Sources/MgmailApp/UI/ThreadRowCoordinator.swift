@@ -82,6 +82,15 @@ final class ThreadRowCoordinator: ObservableObject {
         appState.requestDetach(account: key.accountID, id: key.threadID)
     }
 
+    /// 右键「查看原始邮件」：开一扇原文窗口。
+    ///
+    /// 原文是一封信一份，而按会话显示时这一行代表的是一串——取最新的那一封。
+    /// 想看串里更早的某一封，从右栏那封卡片上的右键菜单进，那儿指的就是它自己。
+    func showRawSource(_ summary: ThreadSummary) {
+        guard let messageID = model.messageIDs(for: summary.key).last else { return }
+        appState.requestRawSource(account: summary.accountID, messageID: messageID)
+    }
+
     /// 双击表格第 `row` 行。
     ///
     /// 表格给的是行号（见 `ThreadListDoubleClick`），这里翻译成那一封邮件。
