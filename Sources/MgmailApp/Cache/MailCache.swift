@@ -6,6 +6,14 @@ import CryptoKit
 /// 只存正文——那是不可变的，存下来就一直有效。读没读、有没有星标这些属性
 /// 全在 `MailStore` 的账户池里，不在这儿留副本，也就不会不一致。
 struct CachedThread: Codable {
+    /// 缓存格式的版本。
+    ///
+    /// 渲染出来的字段变了（比如信头上多了抄送）就抬一格。旧文件里没有这个字段、
+    /// 解码直接失败，于是被当成没缓存重取一次——这正是要的：不抬版本的话，
+    /// 一封以前打开过的信会一直显示成「没有抄送」，而它其实只是当时没存下来。
+    static let currentVersion = 2
+
+    var version = CachedThread.currentVersion
     let subject: String
     let messages: [RenderedMessage]
 }
@@ -56,7 +64,11 @@ actor MailCache {
 
     /// `conversation == false` 时存的是单封邮件（消息 id 与会话 id 可能相同，必须分目录）。
     func thread(account: String, threadID: String, conversation: Bool = true) -> CachedThread? {
-        load(CachedThread.self, account: account, kind: conversation ? "thread" : "message", key: threadID)
+        let cached = load(CachedThread.self, account: account,
+                          kind: conversation ? "thread" : "message", key: threadID)
+        // 版本对不上就当没有：下次打开重取一份新的，旧文件被覆盖掉
+        guard cached?.version == CachedThread.currentVersion else { return nil }
+        return cached
     }
     func saveThread(_ thread: CachedThread, account: String, threadID: String, conversation: Bool = true) {
         save(thread, account: account, kind: conversation ? "thread" : "message", key: threadID)
@@ -66,6 +78,10 @@ actor MailCache {
     ///
     /// 预取拿它跳过已经有的正文。走 `thread(...)` 也能问出来，但那条路会把文件的
     /// 使用时间推到此刻——一封没人打开过的邮件会因为被预取查过而在回收时显得很新。
+    ///
+    /// 只看文件在不在，不看版本：过期的那份要读出整个文件才认得出来，而正文动辄几 MB，
+    /// 为了预取把它们全读一遍不值。代价是旧版本的缓存等用户真打开时才重取，
+    /// 慢的就是那一次。
     func hasThread(account: String, threadID: String, conversation: Bool = true) -> Bool {
         let url = fileURL(account: account, kind: conversation ? "thread" : "message", key: threadID)
         return FileManager.default.fileExists(atPath: url.path)

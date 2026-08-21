@@ -177,6 +177,10 @@ struct MessageCard: View {
     let isUnread: Bool
     let onToggle: () -> Void
 
+    @Environment(\.openWindow) private var openWindow
+    /// 收件人那几行是不是摊开了。默认只给一行，见 `recipients`。
+    @State private var showAllRecipients = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -215,11 +219,7 @@ struct MessageCard: View {
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
                 }
                 if isExpanded {
-                    if !message.to.isEmpty {
-                        Text("收件人：\(message.to)")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                    recipients
                 } else {
                     Text(message.snippet ?? "")
                         .font(.caption).foregroundStyle(.secondary)
@@ -230,6 +230,40 @@ struct MessageCard: View {
         .padding(12)
         .contentShape(Rectangle())
         .onTapGesture { onToggle() }
+        // 会话里每封信各有各的原文，所以入口挂在卡片头上——点的是哪一封就看哪一封
+        .contextMenu {
+            Button("查看原始邮件") {
+                openWindow(id: RawSourceWindow.id,
+                           value: RawSourceTarget(accountID: account, messageID: message.id))
+            }
+        }
+    }
+
+    /// 收件人 / 抄送 / 密送。哪几行有内容由 `RenderedMessage.recipientFields` 定，
+    /// 没有抄送的信就不会多出一行空头衔。
+    ///
+    /// 默认每行只给一行高度：一封信抄送十几个人是常事，全摊开会把正文顶到看不见。
+    /// 点一下摊开、再点收起——手势挂在这一块自己身上，里层先接住，
+    /// 所以点在收件人上不会顺带把整张卡片折起来。
+    @ViewBuilder
+    private var recipients: some View {
+        let fields = message.recipientFields
+        if !fields.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(fields) { field in
+                    Text("\(field.label)：\(field.value)")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(showAllRecipients ? nil : 1)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.15)) { showAllRecipients.toggle() }
+            }
+            .help(showAllRecipients ? "点按收起收件人" : "点按显示完整的收件人")
+        }
     }
 
     /// 发件人头像配色同样由地址稳定推导，理由见 `StableHash`。

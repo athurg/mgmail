@@ -92,6 +92,22 @@ struct GmailAPI {
         return try decode(GmailMessage.self, data)
     }
 
+    /// 取一封邮件的原文（投递进来的那份 RFC 5322 报文本身）。
+    ///
+    /// `format=raw` 的响应里只有一个 base64url 的整封报文，没有 Gmail 解析过的 payload——
+    /// 「查看原始邮件」要的正是这份未经加工的字节：头字段一条不少、顺序不变、
+    /// 非 ASCII 也还是编码态。拆解交给 `RawSource`。
+    func getRawMessage(id: String) async throws -> Data {
+        struct Resp: Decodable { let raw: String? }
+        let data = try await send(path: "/messages/\(id)",
+                                  query: [.init(name: "format", value: "raw")])
+        guard let raw = try decode(Resp.self, data).raw,
+              let bytes = MimeParser.decodeBase64URL(raw) else {
+            throw GmailError.decoding("邮件原文为空")
+        }
+        return bytes
+    }
+
     // MARK: - 修改标签 / 状态
 
     /// 把会话移入废纸篓（Gmail 的“删除”语义；30 天后自动清除，可从废纸篓恢复）。
