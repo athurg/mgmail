@@ -3,7 +3,8 @@ import UserNotifications
 
 /// 通知的接收端：前台怎么显示，点开之后落到哪。
 ///
-/// 它只负责把「点了哪条通知」记下来并把应用叫到前台，真正的跳转在 `RootView` 里做
+/// 它只负责把「点了哪条通知」记下来、收走通知中心里剩下的那些、并把应用叫到前台，
+/// 真正的跳转在 `RootView` 里做
 /// ——跳转要动 `AppState` 的分组、邮箱、选中项，那是视图层的事，而且主窗口
 /// 可能已经关了，得等它重新出现再执行。
 @MainActor
@@ -46,14 +47,19 @@ final class NotificationRouter: NSObject, ObservableObject, UNUserNotificationCe
         let identifier = response.actionIdentifier
         Task { @MainActor in
             defer { completionHandler() }
-            guard let route = NotificationRoute(userInfo: userInfo) else { return }
+            let route = NotificationRoute(userInfo: userInfo)
             // 快捷操作：就地处理掉，不把应用叫到前台——不打断人正是这几个按钮的意义
             if let action = NotificationAction(rawValue: identifier) {
+                guard let route else { return }
                 await NotificationActionHandler.shared.perform(action, route: route)
                 return
             }
             guard identifier == UNNotificationDefaultActionIdentifier else { return }
-            self.pending = route
+            // 人已经点开应用来看邮件了，通知中心里那一摞就是过期的东西。
+            // 系统只会移走被点的那一条，剩下的得自己收。
+            UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+            // 报错通知（「邮件操作没能完成」）没有落点，点开只把窗口叫回来
+            if let route { self.pending = route }
             Self.bringToFront()
         }
     }
