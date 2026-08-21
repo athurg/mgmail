@@ -65,6 +65,9 @@ struct ActivityDescriptor: Sendable {
                 default: break
                 }
             }
+            if value("format") == "raw" {
+                return .init(kind: .message, title: "读取邮件原文")
+            }
             if value("format") == "metadata" {
                 return .init(kind: .message, title: isThread ? "读取会话信息" : "读取邮件信息")
             }
