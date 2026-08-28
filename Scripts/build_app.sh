@@ -93,6 +93,14 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>NSApplication</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- 邮件正文里的图片常是明文 http（例如银行账单的版式图）。ATS 默认把这类
+         子资源挡在 WKWebView 外面，用户点了「加载远程内容」也照样是空框。
+         只对 web 内容开例外：网络层（Gmail API、OAuth）仍强制 https。 -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsInWebContent</key>
+        <true/>
+    </dict>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.productivity</string>
     <!-- 应用内拖拽（标签 → 邮件行）用的私有 UTI -->
