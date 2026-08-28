@@ -49,6 +49,11 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSHighResolutionCapable</key><true/>
+    <!-- 同 build_app.sh：给 web 内容开 ATS 例外，否则正文里明文 http 的图片加载不出来。 -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoadsInWebContent</key><true/>
+    </dict>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 </dict>
 </plist>
