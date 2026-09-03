@@ -149,6 +149,13 @@ struct AccountPool: Codable {
     /// 上次跟服务器核对收件箱的时间。
     private(set) var lastAuditAt: Date?
 
+    /// 用户点过「加载远程内容」的邮件 id。
+    ///
+    /// 放在池子里而不是视图上，是因为这个决定属于那封信、不属于那次打开：
+    /// 一封账单第一次点了加载，隔天再翻出来还得再点一次，是在反复问同一个问题。
+    /// 跟标签一样按邮件记、跟池子一起落盘，邮件被彻底删掉时随它一起走。
+    var remoteContentAllowed: Set<String> = []
+
     mutating func markAudited(at date: Date = Date()) {
         lastAuditAt = date
     }
@@ -161,11 +168,23 @@ struct AccountPool: Codable {
         guard pending.count < Self.pendingLimit else { return }
         pending.insert(id)
     }
+
+    /// 邮件从池子里彻底消失（服务器上被永久删除）时，把它的远程内容记忆也一并清掉。
+    ///
+    /// 只在这一条路上清：移进废纸篓只是换标签，信还在，用户的选择也还算数。
+    mutating func forget(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        for id in ids {
+            messages.removeValue(forKey: id)
+        }
+        remoteContentAllowed.subtract(ids)
+        refreshOldest()
+    }
 }
 
 extension AccountPool {
     private enum CodingKeys: String, CodingKey {
-        case messages, cursors, oldestDate, pending, lastAuditAt
+        case messages, cursors, oldestDate, pending, lastAuditAt, remoteContentAllowed
     }
 
     /// 手写解码，只为一件事：给池子加字段时，旧的 pool.json 仍然读得进来。
@@ -180,6 +199,7 @@ extension AccountPool {
         oldestDate = try container.decodeIfPresent(Date.self, forKey: .oldestDate)
         pending = try container.decodeIfPresent(Set<String>.self, forKey: .pending) ?? []
         lastAuditAt = try container.decodeIfPresent(Date.self, forKey: .lastAuditAt)
+        remoteContentAllowed = try container.decodeIfPresent(Set<String>.self, forKey: .remoteContentAllowed) ?? []
     }
 }
 
@@ -287,8 +307,12 @@ final class MailStore: ObservableObject {
         if pools[account]?.cursors[""] != nil {
             let outcome = await MailSync.incremental(account: account)
             if outcome.needsFullReload {
-                // 位点太旧（Gmail 只留约一周），增量已经接不上，池子重建
-                pools[account] = AccountPool()
+                // 位点太旧（Gmail 只留约一周），增量已经接不上，池子重建。
+                // 远程内容的记忆要带过去：重建丢的是本地副本，信本身还在服务器上，
+                // 回溯拉回来之后用户没理由再点一遍。
+                var rebuilt = AccountPool()
+                rebuilt.remoteContentAllowed = pools[account]?.remoteContentAllowed ?? []
+                pools[account] = rebuilt
                 revision += 1
             } else {
                 apply(outcome, to: account)
@@ -526,10 +550,7 @@ final class MailStore: ObservableObject {
     /// history 已经告诉了我们变动的是哪几个标签，本地按增删应用即可，不必回头逐封去问。
     private func apply(_ outcome: SyncOutcome, to account: String) {
         guard var pool = pools[account] else { return }
-        for id in outcome.removed {
-            pool.messages.removeValue(forKey: id)
-        }
-        if !outcome.removed.isEmpty { pool.refreshOldest() }
+        pool.forget(outcome.removed)
         for (id, delta) in outcome.labelChanges {
             guard var message = pool.messages[id] else {
                 // 池外不等于「太旧、不关心」。它可能刚被从废纸篓捞回收件箱，
@@ -617,6 +638,24 @@ final class MailStore: ObservableObject {
         }
         pools[account] = pool
         revision += 1
+        persist(account)
+    }
+
+    // MARK: - 远程内容
+
+    /// 这封信是不是点过「加载远程内容」。
+    func allowsRemoteContent(account: String, messageID: String) -> Bool {
+        pools[account]?.remoteContentAllowed.contains(messageID) ?? false
+    }
+
+    /// 记住这封信允许加载远程内容，以后打开不必再点。
+    ///
+    /// 不动 `revision`：列表上没有任何东西会因此变化，不值得让它重算一遍。
+    /// 正在看的那个视图自己已经切过去了，这里只负责记下来。
+    func allowRemoteContent(account: String, messageID: String) {
+        var pool = pools[account] ?? AccountPool()
+        guard pool.remoteContentAllowed.insert(messageID).inserted else { return }
+        pools[account] = pool
         persist(account)
     }
 

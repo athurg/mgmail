@@ -108,8 +108,11 @@ struct MessageBodySection: View {
     let message: RenderedMessage
     let account: String
 
+    @EnvironmentObject private var mailStore: MailStore
     @State private var webHeight: CGFloat
     /// 用户在本封邮件里手动点击「加载远程内容」后置为 true。
+    ///
+    /// 这是「这一次」的开关，让正文立刻切过去；「以后每次」记在池子里，见 `remoteEnabled`。
     @State private var showRemote = false
     /// 全局设置：是否默认加载远程内容。默认关闭。
     @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = false
@@ -121,8 +124,14 @@ struct MessageBodySection: View {
         _webHeight = State(initialValue: MessageBodyLayout.height(for: message.id))
     }
 
-    /// 本封邮件最终是否加载远程内容：全局默认开启，或用户手动加载过。
-    private var remoteEnabled: Bool { loadRemoteByDefault || showRemote }
+    /// 本封邮件最终是否加载远程内容：全局默认开启、这次点过，或以前打开时点过。
+    ///
+    /// 最后一项每次重绘都去池子里查一下，一次 Set 查找，比在 onAppear 里抄一份
+    /// 进 State 省事，也不会有「抄的时候池子还没恢复好」这种时间差。
+    private var remoteEnabled: Bool {
+        loadRemoteByDefault || showRemote
+            || mailStore.allowsRemoteContent(account: account, messageID: message.id)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -150,8 +159,11 @@ struct MessageBodySection: View {
             Text("已阻止远程内容以保护隐私")
                 .font(.caption)
             Spacer()
-            Button("加载远程内容") { showRemote = true }
-                .controlSize(.small)
+            Button("加载远程内容") {
+                showRemote = true
+                mailStore.allowRemoteContent(account: account, messageID: message.id)
+            }
+            .controlSize(.small)
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.12)))
