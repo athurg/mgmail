@@ -78,7 +78,7 @@ struct SettingsView: View {
             Form {
                 Section {
                     Toggle("默认加载邮件中的远程内容", isOn: $loadRemoteByDefault)
-                    Text("默认关闭。含远程图片/样式的邮件会先阻止加载，并在正文上方显示提示，需手动点击「加载远程内容」。开启可获得完整排版，代价有两个：可能被发件人用追踪像素得知你已读，以及正文要等这些图片下载完才显示——带外链图片的邮件因此会慢上一两秒。")
+                    Text("默认关闭。含远程图片/样式的邮件会先阻止加载，并在正文上方显示提示，需手动点击「加载远程内容」；点过的邮件会记住，再打开时直接加载。开启可获得完整排版，代价有两个：可能被发件人用追踪像素得知你已读，以及正文要等这些图片下载完才显示——带外链图片的邮件因此会慢上一两秒。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
