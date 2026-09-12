@@ -2,6 +2,9 @@ import SwiftUI
 
 /// 给当前会话加/去标签，并支持新建标签。
 /// 勾选只改本地状态，点「应用」才发一次网络请求（避免每次点击都打一趟）。
+///
+/// 收件箱也算一个可勾选项：Gmail 里「归档」本来就只是摘掉 INBOX 标签，
+/// 放在这里勾/取消，跟工具栏那颗「归档 / 移回收件箱」按钮是同一件事。
 struct LabelEditorView: View {
     let account: String
     @ObservedObject var detail: MessageDetailModel
@@ -9,7 +12,9 @@ struct LabelEditorView: View {
     /// 关闭 popover。由宿主视图控制，比在 popover 里用 `dismiss` 可靠。
     var onClose: () -> Void = {}
 
-    /// 打开面板时该会话已有的用户标签。
+    private static let inboxID = "INBOX"
+
+    /// 打开面板时该会话已有的用户标签（外加 INBOX）。
     @State private var original: Set<String> = []
     /// 当前勾选状态（本地，未提交）。
     @State private var selected: Set<String> = []
@@ -26,18 +31,20 @@ struct LabelEditorView: View {
             Text("标签").font(.headline)
 
             let labels = labelStore.userLabels(for: account)
-            if labels.isEmpty {
-                Text("暂无自定义标签").font(.caption).foregroundStyle(.secondary)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(labels) { label in
-                            labelRow(label)
-                        }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    row(id: Self.inboxID, name: "收件箱", icon: "tray.fill", color: .secondary)
+                    if labels.isEmpty {
+                        Text("暂无自定义标签").font(.caption).foregroundStyle(.secondary)
+                            .padding(.vertical, 3)
+                    }
+                    ForEach(labels) { label in
+                        row(id: label.id, name: label.name, icon: "tag.fill",
+                            color: label.uiColor ?? Color.secondary.opacity(0.5))
                     }
                 }
-                .frame(maxHeight: 220)
             }
+            .frame(maxHeight: 240)
 
             Divider()
 
@@ -78,27 +85,31 @@ struct LabelEditorView: View {
     }
 
     /// 用会话当前的标签重置勾选状态。
+    ///
+    /// 「在不在收件箱」按 `MailPlacement` 判，跟工具栏按钮口径一致：
+    /// 会话模式下一串里只要有一封还在收件箱，这一行就算在。
     private func syncFromThread() {
         let ids = Set(labelStore.userLabels(for: account).map(\.id))
         original = ids.intersection(detail.threadLabelIds)
+        if detail.placement == .inbox { original.insert(Self.inboxID) }
         selected = original
     }
 
-    private func labelRow(_ label: GmailLabel) -> some View {
-        let isOn = selected.contains(label.id)
+    private func row(id: String, name: String, icon: String, color: Color) -> some View {
+        let isOn = selected.contains(id)
         return Button {
-            if isOn { selected.remove(label.id) } else { selected.insert(label.id) }
+            if isOn { selected.remove(id) } else { selected.insert(id) }
         } label: {
             HStack {
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
-                Image(systemName: "tag.fill")
+                Image(systemName: icon)
                     .font(.caption2)
-                    .foregroundStyle(label.uiColor ?? Color.secondary.opacity(0.5))
-                Text(label.name).lineLimit(1)
+                    .foregroundStyle(color)
+                Text(name).lineLimit(1)
                 Spacer()
                 // 与打开时相比有变化的项，右侧给个提示
-                if original.contains(label.id) != isOn {
+                if original.contains(id) != isOn {
                     Image(systemName: isOn ? "plus.circle" : "minus.circle")
                         .font(.caption2)
                         .foregroundStyle(isOn ? Color.green : Color.orange)
@@ -112,13 +123,31 @@ struct LabelEditorView: View {
     }
 
     /// 一次性提交所有勾选变更。
+    ///
+    /// 收件箱那一项单独拆出来：勾上等于「移回收件箱」（加 INBOX、摘 SPAM，
+    /// 在废纸篓里的还得先捞出来），取消等于「归档」（摘 INBOX）。
+    /// 不在废纸篓时这些都能并进同一次请求；从废纸篓回来要走 untrash，只能分两步。
     private func apply() {
         guard changeCount > 0 else { return }
         busy = true
         errorText = nil
         Task {
             do {
-                try await detail.modify(add: added, remove: removed)
+                var add = added.filter { $0 != Self.inboxID }
+                var remove = removed.filter { $0 != Self.inboxID }
+                if added.contains(Self.inboxID) {
+                    if detail.placement == .trashed {
+                        try await detail.moveToInbox()
+                    } else {
+                        add += MailPlacement.inboxAdd
+                        remove += MailPlacement.inboxRemove
+                    }
+                } else if removed.contains(Self.inboxID) {
+                    remove.append(Self.inboxID)
+                }
+                if !add.isEmpty || !remove.isEmpty {
+                    try await detail.modify(add: add, remove: remove)
+                }
                 busy = false
                 onClose()
             } catch {
