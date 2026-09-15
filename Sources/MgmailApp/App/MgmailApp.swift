@@ -24,7 +24,9 @@ struct MgmailApp: App {
                 // 提前把 WebKit 渲染进程拉起来，第一封邮件的正文不用等它冷启动
                 .task { MessageBodyLayout.warmUp() }
         }
-        .windowStyle(.titleBar)
+        // 标题栏和工具栏都不要（参考 Telegram）：三栏的桌布一路铺到窗口顶，
+        // 只剩三个圆点浮在左上角；原来工具栏上的按钮各自搬进了所属那一栏的面板头里。
+        .windowStyle(.hiddenTitleBar)
         .commands {
             SidebarCommands()
             CheckForUpdatesCommand()
@@ -194,8 +196,13 @@ struct RootView: View {
             } detail: {
                 MessageDetailView()
             }
-            // 标题挂在分栏视图自己身上：外面套了 VStack 之后，它不再是窗口的根视图
+            // 标题挂在分栏视图自己身上：外面套了 VStack 之后，它不再是窗口的根视图。
+            // 标题栏藏着看不见它，但「窗口」菜单和 Mission Control 里认它。
             .navigationTitle(AppFlavor.current.displayName)
+            // 分栏视图默认会自带一条工具栏（哪怕只放一个「显示/隐藏边栏」），
+            // 那就是窗口顶上那条白底的来源。底色藏掉，只留一条透明工具栏（边栏按钮在 SidebarView 里摘）：
+            // 不能整条 .toolbar(.hidden)——那样连三个圆点也一起没了。
+            .toolbarBackground(.hidden, for: .windowToolbar)
             // 横贯整个窗口底部的网络活动栏（没有活动时不占位）
             ActivityStatusBar()
         }

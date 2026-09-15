@@ -74,7 +74,7 @@ struct MessageDetailView: View {
         } else if model.isLoading && model.messages.isEmpty {
             ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ThreadDetailPane(model: model, onTrash: requestTrash)
+            ThreadDetailPane(model: model, onTrash: requestTrash, pinnedHeader: true)
         }
     }
 

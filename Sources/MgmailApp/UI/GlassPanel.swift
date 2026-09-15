@@ -88,6 +88,8 @@ extension View {
             .clipShape(shape)
             .glassCard()
             .padding(inset)
+            // 标题栏藏了以后顶上那段安全区是空的，面板一路顶到窗口边（只留 inset），别空一截
+            .ignoresSafeArea(edges: .top)
             .background(WindowBackdrop().ignoresSafeArea())
     }
 }

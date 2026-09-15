@@ -9,8 +9,11 @@ import SwiftUI
 /// 独立窗口则是删完把自己关掉——所以删除由外面传进来。
 struct ThreadDetailPane: View {
     @ObservedObject var model: MessageDetailModel
-    /// 点了工具栏的删除。主窗口转交给中栏列表，独立窗口自己删完关窗。
+    /// 点了删除。主窗口转交给中栏列表，独立窗口自己删完关窗。
     let onTrash: () -> Void
+    /// 操作按钮摆哪儿。主窗口的标题栏藏了，主题和按钮固定在面板头（参考 Telegram 的聊天头）；
+    /// 独立阅读窗口有自己那套悬停才现身的标题栏按钮，正文里只把主题当第一行。
+    var pinnedHeader = false
 
     @EnvironmentObject private var appState: AppState
     @Environment(\.openWindow) private var openWindow
@@ -22,13 +25,110 @@ struct ThreadDetailPane: View {
     @State private var expansionBasis: Set<String> = []
 
     var body: some View {
+        VStack(spacing: 0) {
+            if pinnedHeader, !model.messages.isEmpty {
+                panelHeader
+            }
+            messageList
+        }
+        .alert("操作失败", isPresented: Binding(
+            get: { actionError != nil }, set: { if !$0 { actionError = nil } }
+        )) { Button("好", role: .cancel) {} } message: { Text(actionError ?? "") }
+        // 会话换了、或者同步给这串会话添了新回复，都在这儿重新定默认展开。
+        .onChange(of: model.messages.map(\.id), initial: true) { _, _ in applyDefaultExpansion() }
+    }
+
+    /// 面板头：主题在左，操作按钮在右，不随正文滚动。
+    private var panelHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(model.subject)
+                .font(.headline)
+                .lineLimit(2)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            actionButtons
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    /// 操作按钮分两组：① 写信（回复/全部回复/转发）② 处置（归档/已读未读/星标/删除），末尾是标签。
+    /// 裸图标加细分隔线，不用 ControlGroup 的胶囊——那圈余量在面板头里显得笨。
+    private var actionButtons: some View {
+        HStack(spacing: 12) {
+            Button { compose(.reply(all: false)) } label: {
+                Image(systemName: "arrowshape.turn.up.left")
+            }.help("回复（⌘R）").keyboardShortcut("r", modifiers: .command)
+
+            Button { compose(.reply(all: true)) } label: {
+                Image(systemName: "arrowshape.turn.up.left.2")
+            }.help("全部回复（⇧⌘R）").keyboardShortcut("r", modifiers: [.command, .shift])
+
+            Button { compose(.forward) } label: {
+                Image(systemName: "arrowshape.turn.up.right")
+            }.help("转发（⇧⌘F）").keyboardShortcut("f", modifiers: [.command, .shift])
+
+            Divider().frame(height: 14)
+
+            // 归档和移回收件箱是同一个按钮的两副面孔：邮件已经不在收件箱了，
+            // 「归档」就没有意义，那个位置该换成把它送回去。
+            Button {
+                let placement = model.placement
+                run {
+                    if placement.canArchive { try await model.archive() }
+                    else { try await model.moveToInbox() }
+                }
+            } label: {
+                Image(systemName: model.placement.moveIcon)
+            }.help(model.placement.moveHelp)
+
+            Button {
+                let unread = !model.isUnread
+                run { try await model.setUnread(unread) }
+            } label: {
+                Image(systemName: model.isUnread ? "envelope.badge" : "envelope.open")
+            }.help(model.isUnread ? "标记为已读" : "标记为未读")
+
+            Button {
+                run { try await model.toggleStar() }
+            } label: {
+                Image(systemName: model.isStarred ? "star.fill" : "star")
+                    .foregroundStyle(model.isStarred ? .yellow : .secondary)
+            }.help(model.isStarred ? "取消星标" : "加星标")
+
+            // 已经在废纸篓里的就不摆删除了：再删一次只能是永久删除，这个应用不做。
+            if model.placement.canTrash {
+                Button(role: .destructive) { onTrash() } label: {
+                    Image(systemName: "trash")
+                }.help("删除（移入废纸篓）")
+            }
+
+            Divider().frame(height: 14)
+
+            Button { showLabelPopover.toggle() } label: {
+                Image(systemName: model.hasUserLabels ? "tag.fill" : "tag")
+            }.help("标签")
+            .popover(isPresented: $showLabelPopover) {
+                LabelEditorView(account: model.account ?? "", detail: model,
+                                onClose: { showLabelPopover = false })
+            }
+        }
+        .buttonStyle(.borderless)
+        .font(.system(size: 14))
+        .fixedSize()
+    }
+
+    private var messageList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                Text(model.subject)
-                    .font(.title2).bold()
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding([.horizontal, .top])
+                // 面板头已经写了主题的，正文里不再重复一遍
+                if !pinnedHeader {
+                    Text(model.subject)
+                        .font(.title2).bold()
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding([.horizontal, .top])
+                }
 
                 ForEach(model.messages) { message in
                     MessageCard(
@@ -42,80 +142,6 @@ struct ThreadDetailPane: View {
                 }
             }
             .padding(.bottom, 12)
-        }
-        .toolbar { if !model.messages.isEmpty { toolbarItems } }
-        .alert("操作失败", isPresented: Binding(
-            get: { actionError != nil }, set: { if !$0 { actionError = nil } }
-        )) { Button("好", role: .cancel) {} } message: { Text(actionError ?? "") }
-        // 会话换了、或者同步给这串会话添了新回复，都在这儿重新定默认展开。
-        .onChange(of: model.messages.map(\.id), initial: true) { _, _ in applyDefaultExpansion() }
-    }
-
-    /// 工具栏分两组：① 邮件操作（归档/移回收件箱、已读未读、星标、删除）② 标签。
-    /// 用 ControlGroup 让组内按钮连成一体，组与组之间才有明显的间隔。
-    @ToolbarContentBuilder
-    private var toolbarItems: some ToolbarContent {
-        ToolbarItem {
-            ControlGroup {
-                Button { compose(.reply(all: false)) } label: {
-                    Image(systemName: "arrowshape.turn.up.left")
-                }.help("回复（⌘R）").keyboardShortcut("r", modifiers: .command)
-
-                Button { compose(.reply(all: true)) } label: {
-                    Image(systemName: "arrowshape.turn.up.left.2")
-                }.help("全部回复（⇧⌘R）").keyboardShortcut("r", modifiers: [.command, .shift])
-
-                Button { compose(.forward) } label: {
-                    Image(systemName: "arrowshape.turn.up.right")
-                }.help("转发（⇧⌘F）").keyboardShortcut("f", modifiers: [.command, .shift])
-            }
-        }
-
-        ToolbarItem {
-            ControlGroup {
-                // 归档和移回收件箱是同一个按钮的两副面孔：邮件已经不在收件箱了，
-                // 「归档」就没有意义，那个位置该换成把它送回去。
-                Button {
-                    let placement = model.placement
-                    run {
-                        if placement.canArchive { try await model.archive() }
-                        else { try await model.moveToInbox() }
-                    }
-                } label: {
-                    Image(systemName: model.placement.moveIcon)
-                }.help(model.placement.moveHelp)
-
-                Button {
-                    let unread = !model.isUnread
-                    run { try await model.setUnread(unread) }
-                } label: {
-                    Image(systemName: model.isUnread ? "envelope.badge" : "envelope.open")
-                }.help(model.isUnread ? "标记为已读" : "标记为未读")
-
-                Button {
-                    run { try await model.toggleStar() }
-                } label: {
-                    Image(systemName: model.isStarred ? "star.fill" : "star")
-                        .foregroundStyle(model.isStarred ? .yellow : .secondary)
-                }.help(model.isStarred ? "取消星标" : "加星标")
-
-                // 已经在废纸篓里的就不摆删除了：再删一次只能是永久删除，这个应用不做。
-                if model.placement.canTrash {
-                    Button(role: .destructive) { onTrash() } label: {
-                        Image(systemName: "trash")
-                    }.help("删除（移入废纸篓）")
-                }
-            }
-        }
-
-        ToolbarItem {
-            Button { showLabelPopover.toggle() } label: {
-                Image(systemName: model.hasUserLabels ? "tag.fill" : "tag")
-            }.help("标签")
-            .popover(isPresented: $showLabelPopover) {
-                LabelEditorView(account: model.account ?? "", detail: model,
-                                onClose: { showLabelPopover = false })
-            }
         }
     }
 

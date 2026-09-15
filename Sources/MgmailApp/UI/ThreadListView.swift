@@ -16,6 +16,8 @@ struct ThreadListView: View {
     /// 搜索框里的内容。刻意不持久化——搜索是一次性的动作，
     /// 下次打开应用还带着上次那个词，只会让人以为邮件丢了。
     @State private var searchText = ""
+    /// 面板头里那个搜索框的焦点（⌘F 把光标送进去）。
+    @FocusState private var searchFocused: Bool
     /// 真正交给列表的搜索词。跟着输入延后一点点，见 `searchDebounce`。
     @State private var debouncedSearch = ""
     /// 行的动作中枢（长期存活，保证行视图的字段稳定可比较，详见 ThreadRowCoordinator）。
@@ -83,35 +85,16 @@ struct ThreadListView: View {
     }
 
     var body: some View {
-        content
+        VStack(spacing: 0) {
+            // 面板头（参考 Telegram 的聊天列表）：邮箱名 + 这一栏的操作按钮，下面一条搜索框。
+            // 窗口的标题栏和工具栏都藏了，这些原本在工具栏上的东西搬到这儿，
+            // 每一栏的按钮跟着它管的内容走。
+            panelHeader
+            content
+        }
         // 整栏一张玻璃面板，和侧栏的卡片、右栏的正文是同一套皮
         .glassPanel()
         .navigationTitle(appState.selection?.labelName ?? "收件箱")
-        // 这里不放刷新按钮：自动刷新有定时器，手动刷新在侧栏那一段工具栏上，
-        // 而「正在联网」由窗口底部的活动栏统一交代。
-        //
-        // 「新邮件」放在中栏这一段的最前面（仿 Apple Mail，紧挨着邮箱标题）：
-        // 侧栏那一段只有边栏那么宽，多放一个就溢出到「更多」菜单里去了。
-        // 搜索框摆在窗口右上角（仿 Apple Mail），不占列表的地方。中栏其余的工具栏项
-        // 在 macOS 的分栏视图里本来就落在标题栏最右端。
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button { newMail() } label: {
-                    Image(systemName: "square.and.pencil")
-                }
-                .help("新邮件（⌘N）")
-                .disabled(appState.composeAccount == nil)
-            }
-            ToolbarItemGroup {
-                searchCount
-                scopeMenu
-                filterMenu
-            }
-        }
-        // 搜索框摆在窗口右上角，交给系统的 searchable：工具栏里放不得自己包的
-        // NSView——SwiftUI 重建工具栏宿主视图时会 endEditing，而结束编辑又会引起
-        // 一次布局，转回来再重建一次，主线程就此转死（回车最容易点着这个循环）。
-        .searchable(text: $searchText, placement: .toolbar, prompt: "搜索邮件")
         // 选择/显示方式/过滤器变化：纯本地重算，不联网
         .onChange(of: viewKey, initial: true) { _, _ in
             // 协调器的引用在这里就绪，不依赖列表有没有内容（空邮箱时 list 不会被求值）
@@ -153,7 +136,7 @@ struct ThreadListView: View {
         }
         // 「编辑 → 搜索邮件」（⌘F）
         .onChange(of: appState.searchFocusRequest) { _, _ in
-            SearchFieldFocus.begin()
+            searchFocused = true
         }
         // 「所有账号」要搜到分组之外的账号，它们的池子未必恢复过（列表那条 task
         // 只管当前分组）。恢复是纯读盘，且对已经在内存里的账号是空操作。
@@ -207,6 +190,66 @@ struct ThreadListView: View {
     private func newMail() {
         guard let account = appState.composeAccount else { return }
         openWindow(id: ComposeWindow.id, value: ComposeStore.shared.newMail(from: account))
+    }
+
+    // MARK: - 面板头
+
+    private var panelHeader: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Text(appState.selection?.labelName ?? "收件箱")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                searchCount
+                scopeMenu
+                filterMenu
+                // 这里不放刷新按钮：自动刷新有定时器，手动刷新在侧栏「智能邮箱」卡头和各账号头像上，
+                // 而「正在联网」由窗口底部的活动栏统一交代。
+                Button { newMail() } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .help("新邮件（⌘N）")
+                .disabled(appState.composeAccount == nil)
+            }
+            .buttonStyle(.borderless)
+            .padding(.top, 4)
+            searchField
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+    }
+
+    /// 搜索框（纯本地，不发任何请求）。
+    ///
+    /// 自己画一个 TextField，不再用 `.searchable`：那个只能落在工具栏里，而工具栏已经藏了。
+    /// 放在普通视图里也没有当年工具栏里塞 NSView 那个 endEditing 死循环的问题。
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("搜索邮件", text: $searchText)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .onExitCommand { clearSearch(); searchFocused = false }
+            if !searchText.isEmpty {
+                Button { clearSearch() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("清除搜索")
+            }
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.quaternary.opacity(0.7))
+        )
+        .disabled(appState.selection == nil)
     }
 
     // MARK: - 主体

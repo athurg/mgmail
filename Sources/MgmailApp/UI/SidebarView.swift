@@ -24,28 +24,35 @@ struct SidebarView: View {
     @State private var headerTextHeights: [String: CGFloat] = [:]
 
     var body: some View {
-        ScrollView {
-            if appState.accounts.isEmpty {
-                emptyState
-            } else if appState.activeAccounts.isEmpty {
-                emptyProfileState
-            } else {
-                VStack(spacing: 12) {
-                    smartMailboxCard
-                    ForEach(appState.activeAccounts) { account in
-                        accountCard(account)
+        VStack(spacing: 0) {
+            if !appState.accounts.isEmpty {
+                // 标题栏藏了，三个圆点直接浮在这一栏的左上角，分组标签得从它们下面开始排。
+                // 边栏那一栏在没有任何工具栏项时系统自己就会往下让一段，这里只再补一点
+                ProfileSwitcher()
+                    .padding(.top, 4)
+            }
+            ScrollView {
+                if appState.accounts.isEmpty {
+                    emptyState
+                } else if appState.activeAccounts.isEmpty {
+                    emptyProfileState
+                } else {
+                    VStack(spacing: 12) {
+                        smartMailboxCard
+                        ForEach(appState.activeAccounts) { account in
+                            accountCard(account)
+                        }
                     }
+                    .padding(10)
                 }
-                .padding(10)
             }
         }
+        // 顶上那段安全区是藏掉的标题栏留下的，直接顶上去，三个圆点的位置由上面的 padding 让
+        .ignoresSafeArea(edges: .top)
         // 自己铺底色：系统侧栏材质在窗口失焦时会退成平灰，玻璃卡片就看不见了（见 WindowBackdrop）
         .background(WindowBackdrop().ignoresSafeArea())
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if !appState.accounts.isEmpty {
-                ProfileSwitcher()
-            }
-        }
+        // 工具栏藏了，那颗「显示/隐藏边栏」孤零零浮在右上角一块玻璃里，摘掉；边栏开合走「显示」菜单（⌃⌘S）
+        .toolbar(removing: .sidebarToggle)
         .sheet(item: $appState.labelEditTarget) { target in
             LabelEditSheet(target: target)
                 .environmentObject(labelStore)
@@ -83,30 +90,30 @@ struct SidebarView: View {
                 refreshAll()
             }
         }
-        // 「获取所有新邮件」落在标题栏的侧栏那一段（紧挨着「显示/隐藏边栏」）：
-        // 它是全局动作，不属于哪个账号。这一段只有边栏那么宽，
-        // 再多放一个就得溢出到「更多」菜单里去，所以「新邮件」放在中栏那一段（见 ThreadListView）。
-        .toolbar {
-            ToolbarItem {
-                Button { refreshAll() } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("获取所有新邮件（⇧⌘N）")
-                .disabled(appState.activeAccounts.isEmpty)
-            }
-        }
     }
 
     // MARK: - 智能邮箱（跨账号聚合）
 
     private var smartMailboxCard: some View {
         SidebarCard {
-            Text("智能邮箱")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 8)
-                .padding(.top, 4)
-                .padding(.bottom, 2)
+            HStack {
+                Text("智能邮箱")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                // 「获取所有新邮件」是全局动作，不属于哪个账号，放在跨账号这张卡的头上。
+                // 单个账号的刷新在各自卡片的头像上。
+                Button { refreshAll() } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .help("获取所有新邮件（⇧⌘N）")
+                .disabled(appState.activeAccounts.isEmpty)
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+            .padding(.bottom, 2)
             // 汇总当前分组的所有账号。只放收件箱和星标——已发送、草稿、垃圾邮件、
             // 废纸篓都是「针对某个账号」才有意义的，去下面各账号自己的卡片里看。
             ForEach(StandardMailbox.smart) { box in
