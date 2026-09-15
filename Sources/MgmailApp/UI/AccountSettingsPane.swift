@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 设置窗口的「账号」页：改显示名、加备注、移除账号、添加账号。
+/// 设置窗口的「账号」页：改显示名、加备注、选代表色、移除账号、添加账号。
 struct AccountSettingsPane: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var mailStore: MailStore
@@ -81,6 +81,10 @@ private struct AccountRow: View {
                     ))
                     .textFieldStyle(.roundedBorder)
                 }
+                HStack(alignment: .top, spacing: 8) {
+                    Text("颜色").font(.caption).foregroundStyle(.secondary).frame(width: 42, alignment: .leading)
+                    colorSwatches
+                }
             }
 
             VStack(spacing: 8) {
@@ -99,5 +103,40 @@ private struct AccountRow: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+    }
+
+    /// 代表色：第一格是「自动」（按邮箱推导的色，带 A 字），后面是一排系统色。
+    /// 多账号混在一个列表里时，每行左侧按这个色画一道竖条。
+    private var colorSwatches: some View {
+        HStack(spacing: 6) {
+            swatch(hex: nil, fill: account.derivedColor)
+            ForEach(Account.colorPalette, id: \.self) { hex in
+                swatch(hex: hex, fill: Color(hexString: hex) ?? .secondary)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private func swatch(hex: String?, fill: Color) -> some View {
+        let selected = account.colorHex == hex
+        return Circle()
+            .fill(fill)
+            .frame(width: 18, height: 18)
+            .overlay(Circle().strokeBorder(Color.primary.opacity(0.15)))
+            .overlay {
+                if hex == nil {
+                    Text("A")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .overlay {
+                if selected {
+                    Circle().strokeBorder(Color.accentColor, lineWidth: 2).padding(-3)
+                }
+            }
+            .contentShape(Circle().inset(by: -3))
+            .onTapGesture { appState.setColor(hex, for: account.id) }
+            .help(hex == nil ? "自动（按邮箱推导）" : "代表色 \(hex ?? "")")
     }
 }

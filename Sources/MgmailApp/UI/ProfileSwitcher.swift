@@ -34,8 +34,6 @@ struct ProfileSwitcher: View {
                 return true
             }
         }
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
         .alert("重命名分组", isPresented: Binding(
             get: { renaming != nil }, set: { if !$0 { renaming = nil } }
         )) {
