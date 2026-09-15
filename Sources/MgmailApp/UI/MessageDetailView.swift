@@ -25,7 +25,15 @@ struct MessageDetailView: View {
         ZStack {
             Color.clear
             if !isMultiSelection {
-                singleContent
+                // 没选邮件时只在桌布上写一句提示，不摆空面板；选了才裁进玻璃面板。
+                // 多选的叠加卡片要从列表飞过来，也不能被面板裁掉，所以面板只包单选正文。
+                if appState.selectedThreads.isEmpty {
+                    singleContent
+                } else {
+                    singleContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .glassPanel()
+                }
             }
             if stackVisible {
                 StackedSelectionView(
@@ -71,7 +79,7 @@ struct MessageDetailView: View {
         } else if model.isLoading && model.messages.isEmpty {
             ProgressView("加载中…").frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ThreadDetailPane(model: model, onTrash: requestTrash)
+            ThreadDetailPane(model: model, onTrash: requestTrash, pinnedHeader: true)
         }
     }
 

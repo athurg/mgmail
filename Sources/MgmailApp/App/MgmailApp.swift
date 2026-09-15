@@ -24,9 +24,11 @@ struct MgmailApp: App {
                 // 提前把 WebKit 渲染进程拉起来，第一封邮件的正文不用等它冷启动
                 .task { MessageBodyLayout.warmUp() }
         }
-        .windowStyle(.titleBar)
+        // 标题栏和工具栏都不要（参考 Telegram）：三栏的桌布一路铺到窗口顶，
+        // 只剩三个圆点浮在左上角；原来工具栏上的按钮各自搬进了所属那一栏的面板头里。
+        .windowStyle(.hiddenTitleBar)
         .commands {
-            SidebarCommands()
+            ToggleSidebarCommand(appState: appState)
             CheckForUpdatesCommand()
             NewMailCommand(appState: appState)
             GetMailCommands(appState: appState)
@@ -185,20 +187,25 @@ struct RootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            NavigationSplitView {
+            // 三栏是自己排的（见 ThreePaneLayout），整窗铺一张桌布，三块玻璃面板浮在上面。
+            // 标题栏藏着，面板一路顶到窗口边，只剩三个圆点浮在侧栏左上角。
+            ThreePaneLayout {
                 SidebarView()
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
-            } content: {
+            } list: {
                 ThreadListView()
-                    .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 520)
             } detail: {
                 MessageDetailView()
             }
-            // 标题挂在分栏视图自己身上：外面套了 VStack 之后，它不再是窗口的根视图
+            .ignoresSafeArea(edges: .top)
+            // 标题栏藏着看不见它，但「窗口」菜单和 Mission Control 里认它。
             .navigationTitle(AppFlavor.current.displayName)
             // 横贯整个窗口底部的网络活动栏（没有活动时不占位）
             ActivityStatusBar()
         }
+        // 桌布铺在整个窗口内容的最底下，不挂在三栏布局上：活动栏收起时三栏要长高一截，
+        // 挂在它身上的底色会跟着一起重排，顶上藏着的标题栏那一段就会露出窗口白底闪一下。
+        // 铺在根上，它的大小只跟窗口走，和里面怎么重排无关。
+        .background(WindowBackdrop().ignoresSafeArea())
         .sheet(isPresented: Binding(
             get: { !appState.hasOAuthConfig },
             set: { _ in }
