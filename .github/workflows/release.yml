@@ -95,4 +95,4 @@ jobs:
           gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
           gh release create "$TAG" dist/Mgmail.zip dist/manifest.json \
             --prerelease --target "$GITHUB_SHA" \
-            --title "开发版 $VERSION（构建 $BUILD）" --notes-file notes.md
+            --title "开发版 ${VERSION}（构建 ${BUILD}）" --notes-file notes.md
