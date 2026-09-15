@@ -4,7 +4,8 @@ import SwiftUI
 /// 点击切换当前分组；右键单个标签可改名/换色/删除；最右 + 号新建分组。
 ///
 /// 标签排不下时往下折行，不做横向滚动：滚动会把标签裁在卡片边上，看着像少了半个；
-/// 折行则始终全部可见。
+/// 折行则始终全部可见。同时把「全部排成一行要多宽」经 `ProfileSwitcherRowWidthKey`
+/// 报上去，侧栏拿它当自己的最小宽度——拖窄侧栏时标签就不会折起来。
 struct ProfileSwitcher: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.openSettings) private var openSettings
@@ -17,17 +18,26 @@ struct ProfileSwitcher: View {
     /// 当前拖放悬停的目标分组 id（用于画插入指示）。
     @State private var dropTargetID: String?
 
+    /// 标签之间的间距。
+    static let spacing: CGFloat = 6
+    /// 整排左右各留的边。
+    private static let horizontalPadding: CGFloat = 10
+
     var body: some View {
-        WrappingRow(spacing: 6, lineSpacing: 6) {
+        WrappingRow(spacing: Self.spacing, lineSpacing: 6) {
             allChip
             ForEach(appState.profiles) { profile in
                 profileChip(profile)
             }
             addButton
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, Self.horizontalPadding)
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // 每个标签报的是「自己的宽 + 一个间距」，加起来多算了最后一个间距，减掉；再补上两边留白。
+        .transformPreference(ProfileSwitcherRowWidthKey.self) { total in
+            total += Self.horizontalPadding * 2 - Self.spacing
+        }
         // 兜底：拖到标签之间的空白处则移到末尾；同时保证拖动结束后状态复位。
         .dropDestination(for: String.self) { items, _ in
             defer { draggingID = nil; dropTargetID = nil }
@@ -141,6 +151,7 @@ struct ProfileSwitcher: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .reportRowWidth()
     }
 
     private var addButton: some View {
@@ -161,6 +172,7 @@ struct ProfileSwitcher: View {
         .contextMenu {
             Button("管理分组…") { openProfileSettings() }
         }
+        .reportRowWidth()
     }
 
     /// 打开设置窗口并切到「分组」页。
@@ -178,6 +190,28 @@ struct ProfileSwitcher: View {
 
     private func colorName(_ index: Int) -> String {
         ["蓝", "绿", "橙红", "紫", "粉", "琥珀", "灰"][index % 7]
+    }
+}
+
+/// 分组标签全部排成一行需要的宽度（含切换器自己的左右留白）。
+/// 每个标签各报自己的一份，这里加总；由 SidebarView 接住，作为侧栏的最小宽度。
+struct ProfileSwitcherRowWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value += nextValue()
+    }
+}
+
+private extension View {
+    /// 把这个标签在一行里占的宽（自己的宽 + 一个间距）报给 `ProfileSwitcherRowWidthKey`。
+    /// 折行布局给每个标签的就是它的理想尺寸，所以量到的宽和排成一行时是一样的。
+    func reportRowWidth() -> some View {
+        background {
+            GeometryReader { geo in
+                Color.clear.preference(key: ProfileSwitcherRowWidthKey.self,
+                                       value: geo.size.width + ProfileSwitcher.spacing)
+            }
+        }
     }
 }
 

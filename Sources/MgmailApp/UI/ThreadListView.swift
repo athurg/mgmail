@@ -93,6 +93,9 @@ struct ThreadListView: View {
             // 每一栏的按钮跟着它管的内容走。
             panelHeader
             content
+                // 主体始终撑满面板头下面的空间：列表本身是贪婪的，但空状态（搜不到、
+                // 没邮件）不是，不撑开的话整张玻璃面板会缩成内容那么高、漂到中间去。
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // 整栏一张玻璃面板，和侧栏的卡片、右栏的正文是同一套皮
         .glassPanel()
