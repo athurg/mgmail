@@ -1,0 +1,98 @@
+# 构建并发布到 GitHub Release，应用内的「检查更新」读的就是这里的产物。
+#
+# 两条线：
+#   - 推 v* tag        → 正式版：Release 名字就是 tag，永久保留
+#   - 合并进 main      → 开发版：滚动更新的预发布 `main-latest`，每次合并整个换掉
+#
+# 必须跑在 macOS 上：swift build 出 Mach-O、lipo 合通用二进制、codesign，Linux 一样也做不了，
+# 所以这里没有按惯例用自托管的 arc-runner-set，而是 GitHub 托管的 macOS 机（公开仓库免费）。
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+# 同一条线上的两次发布不并行：两个 main 合并挨得近时，谁后跑完 main-latest 就是谁的
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 版本号取最近的 tag、构建号数提交，都得有完整历史
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: 决定发布到哪
+        id: target
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=main-latest" >> "$GITHUB_OUTPUT"
+            echo "channel=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 整理更新说明
+        run: |
+          # 正式版：上一个 tag 到这个 tag 之间的提交；开发版：最近一个 tag 到现在
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            PREV="$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)"
+          else
+            PREV="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          fi
+          RANGE="${PREV:+$PREV..}HEAD"
+          {
+            if [[ -n "$PREV" ]]; then echo "自 $PREV 以来："; echo; fi
+            git log --no-merges --pretty='- %s' "$RANGE"
+          } > notes.md
+          cat notes.md
+
+      - name: 构建通用二进制并打包
+        env:
+          MGMAIL_TAG: ${{ steps.target.outputs.tag }}
+          MGMAIL_CHANNEL: ${{ steps.target.outputs.channel }}
+          MGMAIL_NOTES_FILE: notes.md
+        run: |
+          swift --version
+          Scripts/package_dist.sh
+          cat dist/manifest.json
+
+      - name: 发布正式版
+        if: steps.target.outputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          VERSION="$(python3 -c 'import json;print(json.load(open("dist/manifest.json"))["version"])')"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # 已经手工建过 Release（比如先写好了说明）：只补产物，说明不动
+            gh release upload "$TAG" dist/Mgmail.zip dist/manifest.json --clobber
+          else
+            gh release create "$TAG" dist/Mgmail.zip dist/manifest.json \
+              --title "Mgmail $VERSION" --notes-file notes.md
+          fi
+
+      - name: 发布开发版（滚动覆盖 main-latest）
+        if: steps.target.outputs.channel == 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          VERSION="$(python3 -c 'import json;print(json.load(open("dist/manifest.json"))["version"])')"
+          BUILD="$(python3 -c 'import json;print(json.load(open("dist/manifest.json"))["build"])')"
+          # 删掉重建而不是就地改：tag 要挪到新提交上，Release 的说明、产物也要整个换，
+          # 拆成几步改总有一步漏。中间那几秒没有 main-latest，应用那边读不到就当没更新。
+          gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$TAG" dist/Mgmail.zip dist/manifest.json \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "开发版 $VERSION（构建 $BUILD）" --notes-file notes.md
