@@ -1,5 +1,9 @@
 #!/bin/bash
-# 编译 MgmailApp 并组装成 dist/Mgmail.app。
+# 编译 MgmailApp 并组装成开发包 dist/Mgmail\ Dev.app。
+#
+# 出的永远是「开发包」身份（名字 Mgmail Dev、bundle id 加 .dev 后缀、带 DEV 角标的图标、
+# 独立的数据目录、不参与自动更新），和 /Applications 里装的正式包互不相干，
+# 可以同时跑、一眼分得清。正式包由 Scripts/package_dist.sh 出。
 # 用法：
 #   Scripts/build_app.sh          # release 编译并打包
 #   Scripts/build_app.sh debug    # debug 编译并打包
@@ -10,6 +14,7 @@ set -euo pipefail
 # 切到仓库根目录（脚本在 Scripts/ 下）
 cd "$(dirname "$0")/.."
 source Scripts/app_bundle.sh
+set_flavor dev
 
 CONFIG="release"
 DO_RUN="no"
@@ -60,6 +65,7 @@ else
 fi
 
 echo "==> 完成: $APP_DIR"
+echo "    这是开发包（${BUNDLE_ID}），数据在 ~/Library/Application Support/${APP_NAME}/，与正式包互不干扰。"
 
 if [[ "$DO_RUN" == "yes" ]]; then
   echo "==> 启动 $APP_NAME"

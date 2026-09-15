@@ -1,5 +1,5 @@
 #!/bin/bash
-# 打一个可分发到其它 Mac 的安装包：
+# 打一个可分发到其它 Mac 的安装包（正式包身份：Mgmail / com.mgmail.app）：
 #  - 通用二进制（arm64 + x86_64），兼容 Apple Silicon 与 Intel
 #  - ad-hoc 代码签名（不依赖本机的 Mgmail Dev 证书，避免目标机报“已损坏”）
 #  - 产物：dist/Mgmail.zip，以及应用内检查更新要读的 dist/manifest.json
@@ -12,6 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source Scripts/app_bundle.sh
+set_flavor release
 
 DIST="dist"
 APP_DIR="$DIST/$APP_NAME.app"

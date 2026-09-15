@@ -126,6 +126,8 @@ final class AppState: ObservableObject {
 
 
     init() {
+        // 开发包首次启动：从正式包克隆一份数据快照。必须在读账号列表之前，否则抄来的账号这次看不见
+        DevSeed.run()
         accounts = AccountStore.load()
         profiles = ProfileStore.load()
         // 恢复上次选中的分组；若指向已不存在的分组则回落到「全部」。
