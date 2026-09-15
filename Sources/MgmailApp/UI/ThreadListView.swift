@@ -85,12 +85,21 @@ struct ThreadListView: View {
     var body: some View {
         content
         .navigationTitle(appState.selection?.labelName ?? "收件箱")
-        // 这里不再放刷新按钮：自动刷新有定时器，手动刷新在侧栏账号行上，
+        // 这里不放刷新按钮：自动刷新有定时器，手动刷新在侧栏那一段工具栏上，
         // 而「正在联网」由窗口底部的活动栏统一交代。
         //
-        // 搜索框摆在窗口右上角（仿 Apple Mail），不占列表的地方。中栏的工具栏项
+        // 「新邮件」放在中栏这一段的最前面（仿 Apple Mail，紧挨着邮箱标题）：
+        // 侧栏那一段只有边栏那么宽，多放一个就溢出到「更多」菜单里去了。
+        // 搜索框摆在窗口右上角（仿 Apple Mail），不占列表的地方。中栏其余的工具栏项
         // 在 macOS 的分栏视图里本来就落在标题栏最右端。
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button { newMail() } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .help("新邮件（⌘N）")
+                .disabled(appState.composeAccount == nil)
+            }
             ToolbarItemGroup {
                 searchCount
                 scopeMenu
@@ -129,18 +138,6 @@ struct ThreadListView: View {
                 await MailRefresh.accounts(ids, labels: labelStore, mail: mailStore)
             }
             isFirstLoad = false
-        }
-        // 侧栏账号行上的刷新按钮
-        .onChange(of: appState.syncRequest) { _, request in
-            guard let request else { return }
-            Task {
-                if let account = request.accountID {
-                    await MailRefresh.account(account, labels: labelStore, mail: mailStore)
-                } else {
-                    await MailRefresh.accounts(appState.activeAccounts.map(\.id),
-                                               labels: labelStore, mail: mailStore)
-                }
-            }
         }
         // 输入防抖：真正参与重算的是 debouncedSearch
         .task(id: searchText) {
@@ -202,6 +199,12 @@ struct ThreadListView: View {
                                           from: $0.from, subject: $0.subject, date: $0.date) }
             Task { @MainActor in appState.selectedInfos = infos }
         }
+    }
+
+    /// 新写一封信，发件人按 `AppState.composeAccount` 的规则挑（与菜单栏 ⌘N 同一套）。
+    private func newMail() {
+        guard let account = appState.composeAccount else { return }
+        openWindow(id: ComposeWindow.id, value: ComposeStore.shared.newMail(from: account))
     }
 
     // MARK: - 主体

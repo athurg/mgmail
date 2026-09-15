@@ -72,7 +72,7 @@ final class AppState: ObservableObject {
     @Published var trashRequest: ThreadRequest?
     private var requestToken = 0
 
-    /// 侧栏「刷新」按钮发来的同步请求，由中栏列表执行。
+    /// 菜单栏「邮箱 → 获取新邮件」发来的同步请求，由侧栏执行。
     @Published var syncRequest: SyncRequest?
     private var syncToken = 0
 
@@ -101,7 +101,7 @@ final class AppState: ObservableObject {
         trashRequest = ThreadRequest(account: account, id: id, token: requestToken)
     }
 
-    /// 请求同步（侧栏刷新按钮）。`account` 为 nil 表示当前列表涉及的全部账号。
+    /// 请求同步（菜单栏「获取新邮件」）。`account` 为 nil 表示当前分组的全部账号。
     func requestSync(account: String?) {
         syncToken += 1
         syncRequest = SyncRequest(accountID: account, token: syncToken)
@@ -369,7 +369,7 @@ struct ThreadRequest: Equatable {
     let token: Int
 }
 
-/// 由侧栏发起、交给列表执行的同步请求（`accountID` 为 nil 表示全部账号）。
+/// 由菜单栏发起、交给侧栏执行的同步请求（`accountID` 为 nil 表示当前分组的全部账号）。
 struct SyncRequest: Equatable {
     let accountID: String?
     let token: Int

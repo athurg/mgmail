@@ -29,6 +29,7 @@ struct MgmailApp: App {
             SidebarCommands()
             CheckForUpdatesCommand()
             NewMailCommand(appState: appState)
+            GetMailCommands(appState: appState)
             SearchMailCommand(appState: appState)
             // 账号已在「设置」里统一管理，不再单独开菜单。
             // 「活动」窗口由下面的 Window 场景自动出现在「窗口」菜单里（⌘0）。
@@ -129,6 +130,28 @@ struct NewMailCommand: Commands {
             }
             .keyboardShortcut("n", modifiers: .command)
             .disabled(appState.composeAccount == nil)
+        }
+    }
+}
+
+/// 「邮箱」菜单：获取所有新邮件（⇧⌘N），以及按账号单独获取。
+///
+/// 和 Apple Mail 一个位置、一个快捷键。真正的同步在侧栏执行——菜单栏拿不到视图环境里的
+/// 标签库与邮件池，所以经 `AppState.requestSync` 转一手。
+struct GetMailCommands: Commands {
+    @ObservedObject var appState: AppState
+
+    var body: some Commands {
+        CommandMenu("邮箱") {
+            Button("获取所有新邮件") { appState.requestSync(account: nil) }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(appState.activeAccounts.isEmpty)
+            Menu("获取新邮件") {
+                ForEach(appState.activeAccounts) { account in
+                    Button(account.displayName) { appState.requestSync(account: account.id) }
+                }
+            }
+            .disabled(appState.activeAccounts.isEmpty)
         }
     }
 }
