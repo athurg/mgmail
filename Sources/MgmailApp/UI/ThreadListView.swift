@@ -672,6 +672,16 @@ struct ThreadRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
+            // 多账号混排时，行左缘一道账号代表色的竖条，扫一眼就能把不同来源的邮件分开。
+            // 单账号视图（accountBadge 为 nil）不画，颜色留给真需要区分的时候。
+            // 竖条只跟着行内容走、一封一段：试过画在行底连成整条，视觉上反而不如分段的清爽。
+            if let account = accountBadge {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(account.avatarColor)
+                    .frame(width: 3)
+                    .frame(maxHeight: .infinity)
+                    .padding(.trailing, -4)
+            }
             Circle()
                 .fill(summary.isUnread ? Color.accentColor : Color.clear)
                 .frame(width: 8, height: 8)

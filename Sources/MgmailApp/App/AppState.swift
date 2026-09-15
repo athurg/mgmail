@@ -252,6 +252,13 @@ final class AppState: ObservableObject {
         AccountStore.save(accounts)
     }
 
+    /// 更新账户代表色；传 nil 回到按 email 推导的「自动」色。
+    func setColor(_ hex: String?, for id: String) {
+        guard let idx = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[idx].colorHex = hex
+        AccountStore.save(accounts)
+    }
+
     /// 重新检测 OAuth 配置文件（用户放好文件后调用）。
     func refreshConfigStatus() {
         hasOAuthConfig = GoogleConfig.load() != nil
