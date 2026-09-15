@@ -84,6 +84,8 @@ struct ThreadListView: View {
 
     var body: some View {
         content
+        // 整栏一张玻璃面板，和侧栏的卡片、右栏的正文是同一套皮
+        .glassPanel()
         .navigationTitle(appState.selection?.labelName ?? "收件箱")
         // 这里不放刷新按钮：自动刷新有定时器，手动刷新在侧栏那一段工具栏上，
         // 而「正在联网」由窗口底部的活动栏统一交代。
@@ -333,6 +335,8 @@ struct ThreadListView: View {
             backfillFooter
         }
         .listStyle(.inset)
+        // 列表自己的底色让掉，透出面板的玻璃
+        .scrollContentBackground(.hidden)
         // 双击某行 → 独立窗口。装在列表上而不是行上，用的是表格自己的双击动作，
         // 单击选中因此毫发无伤，详见 ThreadListDoubleClick。
         .background(ThreadListDoubleClick())

@@ -39,6 +39,8 @@ struct SidebarView: View {
                 .padding(10)
             }
         }
+        // 自己铺底色：系统侧栏材质在窗口失焦时会退成平灰，玻璃卡片就看不见了（见 WindowBackdrop）
+        .background(WindowBackdrop().ignoresSafeArea())
         .safeAreaInset(edge: .top, spacing: 0) {
             if !appState.accounts.isEmpty {
                 ProfileSwitcher()
@@ -277,9 +279,7 @@ struct SidebarView: View {
 
 // MARK: - 卡片与行
 
-/// 侧栏里的一张悬浮卡片：玻璃材质、圆角、和邻卡之间留空。
-///
-/// macOS 26 起用系统的 Liquid Glass；再老的系统退回普通半透明材质加一圈细边和淡影，形状一致。
+/// 侧栏里的一张悬浮卡片：玻璃材质、圆角、和邻卡之间留空（材质见 GlassCard）。
 private struct SidebarCard<Content: View>: View {
     @ViewBuilder var content: Content
 
@@ -289,23 +289,7 @@ private struct SidebarCard<Content: View>: View {
         }
         .padding(5)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(GlassCard(radius: 12))
-    }
-}
-
-private struct GlassCard: ViewModifier {
-    let radius: CGFloat
-
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        if #available(macOS 26, *) {
-            content.glassEffect(.regular, in: shape)
-        } else {
-            content
-                .background(.regularMaterial, in: shape)
-                .overlay(shape.strokeBorder(Color.primary.opacity(0.08)))
-                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-        }
+        .glassCard()
     }
 }
 
