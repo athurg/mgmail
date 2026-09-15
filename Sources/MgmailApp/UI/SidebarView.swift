@@ -26,9 +26,14 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             if !appState.accounts.isEmpty {
-                // 标题栏藏了，三个圆点直接浮在这一栏的左上角，分组标签得从它们下面开始排
-                ProfileSwitcher()
-                    .padding(.top, 30)
+                // 顶上一张卡片：第一行是窗口的三个圆点（见 MainWindowChrome，它们浮在卡片上，
+                // 中心在 y≈25），分组标签从第二行起排、排不下再折行。卡片顶边和中栏面板一样
+                // 从 10pt 起，两栏的顶端就对齐了。
+                SidebarCard(padding: 4) {
+                    ProfileSwitcher()
+                        .padding(.top, 24)
+                }
+                .padding([.top, .horizontal], 10)
             }
             ScrollView {
                 if appState.accounts.isEmpty {
@@ -42,7 +47,8 @@ struct SidebarView: View {
                             accountCard(account)
                         }
                     }
-                    .padding(10)
+                    // 顶上和分组卡片之间留的也是卡间距
+                    .padding(EdgeInsets(top: 12, leading: 10, bottom: 10, trailing: 10))
                 }
             }
         }
@@ -281,13 +287,14 @@ struct SidebarView: View {
 
 /// 侧栏里的一张悬浮卡片：玻璃材质、圆角、和邻卡之间留空（材质见 GlassCard）。
 private struct SidebarCard<Content: View>: View {
+    var padding: CGFloat = 5
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             content
         }
-        .padding(5)
+        .padding(padding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard()
     }

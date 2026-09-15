@@ -2,6 +2,9 @@ import SwiftUI
 
 /// 侧栏顶部的分组切换器：一排胶囊标签，「全部」固定在最左且不可删。
 /// 点击切换当前分组；右键单个标签可改名/换色/删除；最右 + 号新建分组。
+///
+/// 标签排不下时往下折行，不做横向滚动：滚动会把标签裁在卡片边上，看着像少了半个；
+/// 折行则始终全部可见。
 struct ProfileSwitcher: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.openSettings) private var openSettings
@@ -15,24 +18,22 @@ struct ProfileSwitcher: View {
     @State private var dropTargetID: String?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                allChip
-                ForEach(appState.profiles) { profile in
-                    profileChip(profile)
-                }
-                addButton
+        WrappingRow(spacing: 6, lineSpacing: 6) {
+            allChip
+            ForEach(appState.profiles) { profile in
+                profileChip(profile)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // 兜底：拖到标签之间的空白处则移到末尾；同时保证拖动结束后状态复位。
-            .dropDestination(for: String.self) { items, _ in
-                defer { draggingID = nil; dropTargetID = nil }
-                guard let dragged = items.first else { return false }
-                appState.moveProfileToEnd(dragged)
-                return true
-            }
+            addButton
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 兜底：拖到标签之间的空白处则移到末尾；同时保证拖动结束后状态复位。
+        .dropDestination(for: String.self) { items, _ in
+            defer { draggingID = nil; dropTargetID = nil }
+            guard let dragged = items.first else { return false }
+            appState.moveProfileToEnd(dragged)
+            return true
         }
         .alert("重命名分组", isPresented: Binding(
             get: { renaming != nil }, set: { if !$0 { renaming = nil } }
@@ -177,5 +178,54 @@ struct ProfileSwitcher: View {
 
     private func colorName(_ index: Int) -> String {
         ["蓝", "绿", "橙红", "紫", "粉", "琥珀", "灰"][index % 7]
+    }
+}
+
+/// 从左往右排、排满就折到下一行的布局；同一行里的东西按竖向居中对齐。
+private struct WrappingRow: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let rows = arrange(width: width, subviews: subviews)
+        let height = rows.last.map { $0.y + $0.height } ?? 0
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(width: bounds.width, subviews: subviews) {
+            for item in row.items {
+                let y = row.y + (row.height - item.size.height) / 2
+                subviews[item.index].place(at: CGPoint(x: bounds.minX + item.x, y: bounds.minY + y),
+                                           proposal: ProposedViewSize(item.size))
+            }
+        }
+    }
+
+    private struct Row {
+        var y: CGFloat
+        var height: CGFloat = 0
+        var width: CGFloat = 0
+        var items: [(index: Int, x: CGFloat, size: CGSize)] = []
+    }
+
+    private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = [Row(y: 0)]
+        var x: CGFloat = 0
+        for (index, subview) in subviews.enumerated() {
+            let size = subview.sizeThatFits(.unspecified)
+            // 这一行已经有东西且塞不下了，就折行；空行上的第一个不折，再宽也得放，否则会无限折下去
+            if x > 0, x + size.width > width {
+                rows.append(Row(y: rows[rows.count - 1].y + rows[rows.count - 1].height + lineSpacing))
+                x = 0
+            }
+            rows[rows.count - 1].items.append((index, x, size))
+            rows[rows.count - 1].height = max(rows[rows.count - 1].height, size.height)
+            x += size.width
+            rows[rows.count - 1].width = x
+            x += spacing
+        }
+        return rows
     }
 }

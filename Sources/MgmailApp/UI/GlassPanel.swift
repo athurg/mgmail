@@ -30,28 +30,45 @@ struct WindowBackdrop: NSViewRepresentable {
     /// NSVisualEffectView 里，SwiftUI 画的颜色会被它做「活力」混色，整块被提亮、
     /// 和中栏右栏对不上色；普通 NSView 默认不参与混色，三栏才能是同一张桌布。
     final class GradientView: NSView {
-        private let gradient = CAGradientLayer()
-
         var colors: [NSColor] = [] {
-            didSet { gradient.colors = colors.map(\.cgColor) }
+            didSet {
+                (layer as? CAGradientLayer)?.colors = colors.map(\.cgColor)
+                syncWindowBackground()
+            }
         }
 
         override init(frame: NSRect) {
             super.init(frame: frame)
             wantsLayer = true
-            // 层坐标 y 向上：(0.5, 1) 是顶边，颜色数组第一个落在上面
-            gradient.startPoint = CGPoint(x: 0.5, y: 1)
-            gradient.endPoint = CGPoint(x: 0.5, y: 0)
-            layer?.addSublayer(gradient)
         }
 
         required init?(coder: NSCoder) { fatalError("not used") }
 
         override var allowsVibrancy: Bool { false }
 
-        override func layout() {
-            super.layout()
-            gradient.frame = bounds
+        /// 渐变直接当视图的 backing layer，而不是挂一个子层再在 layout() 里手动对 frame：
+        /// 子层的 frame 改动会走 Core Animation 的隐式动画（0.25s），拖窗口时新露出来的
+        /// 那一截要等动画追上才被盖住，中间就是窗口的白底一闪。backing layer 由 AppKit
+        /// 跟着视图同步改大小，没有这层延迟。
+        override func makeBackingLayer() -> CALayer {
+            let gradient = CAGradientLayer()
+            // 层坐标 y 向上：(0.5, 1) 是顶边，颜色数组第一个落在上面
+            gradient.startPoint = CGPoint(x: 0.5, y: 1)
+            gradient.endPoint = CGPoint(x: 0.5, y: 0)
+            gradient.colors = colors.map(\.cgColor)
+            return gradient
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            syncWindowBackground()
+        }
+
+        /// 窗口自己的底色也调成桌布的顶色：拖大窗口时 AppKit 先用窗口底色填新露出的
+        /// 区域，再等内容画上去；底色和桌布同色，这一帧就看不出来。
+        private func syncWindowBackground() {
+            guard let window, let top = colors.first else { return }
+            window.backgroundColor = top
         }
     }
 }
