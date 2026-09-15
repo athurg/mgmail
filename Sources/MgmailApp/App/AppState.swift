@@ -92,6 +92,9 @@ final class AppState: ObservableObject {
     @Published var sidebarHidden = UserDefaults.standard.bool(forKey: "layout.sidebarHidden") {
         didSet { UserDefaults.standard.set(sidebarHidden, forKey: "layout.sidebarHidden") }
     }
+    /// 侧栏的最小宽度：分组标签全排在一行所需的宽（由 SidebarView 量出来）。
+    /// 拖窄侧栏到这儿就停，标签不会折行；不落盘，每次启动重新量。
+    @Published var sidebarMinWidth: CGFloat = 0
 
     /// 「编辑 → 搜索邮件」（⌘F）发来的请求，由中栏把光标放进搜索框。
     /// 菜单命令够不着视图里的焦点状态，只能这样传一程。

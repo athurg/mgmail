@@ -14,12 +14,19 @@ struct ThreePaneLayout<Sidebar: View, List: View, Detail: View>: View {
     @ViewBuilder var list: List
     @ViewBuilder var detail: Detail
 
+    /// 侧栏宽度的允许范围。下限取「分组标签不折行」所需的宽和 200 里大的那个，
+    /// 但不超过上限：分组名真长到一行塞不下 320，也只能折行，不能把侧栏撑到没边。
+    private var sidebarRange: ClosedRange<Double> {
+        let upper = 320.0
+        return min(max(200, appState.sidebarMinWidth), upper)...upper
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             if !appState.sidebarHidden {
                 sidebar
                     .frame(width: sidebarWidth)
-                PaneDivider(width: $sidebarWidth, range: 200...320)
+                PaneDivider(width: $sidebarWidth, range: sidebarRange)
             }
             list
                 .frame(width: listWidth)
@@ -28,6 +35,10 @@ struct ThreePaneLayout<Sidebar: View, List: View, Detail: View>: View {
                 .frame(maxWidth: .infinity)
         }
         .animation(.easeInOut(duration: 0.2), value: appState.sidebarHidden)
+        // 下限变了（新建了分组、启动后刚量出来）而侧栏比它窄，就把侧栏推宽到刚好不折行
+        .onChange(of: sidebarRange.lowerBound, initial: true) { _, lower in
+            if sidebarWidth < lower { sidebarWidth = lower }
+        }
     }
 }
 

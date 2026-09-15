@@ -23,17 +23,25 @@ struct SidebarView: View {
     /// 各账号头右侧文字块的实际高度，头像按它定大小（按账号 id 记，行数因备注/回溯日期而异）。
     @State private var headerTextHeights: [String: CGFloat] = [:]
 
+    /// 顶上分组卡片的内边距和它到侧栏边缘的距离。算侧栏最小宽度时要把这两圈加回去。
+    private static let profileCardPadding: CGFloat = 4
+    private static let profileCardInset: CGFloat = 10
+
     var body: some View {
         VStack(spacing: 0) {
             if !appState.accounts.isEmpty {
                 // 顶上一张卡片：第一行是窗口的三个圆点（见 MainWindowChrome，它们浮在卡片上，
                 // 中心在 y≈25），分组标签从第二行起排、排不下再折行。卡片顶边和中栏面板一样
                 // 从 10pt 起，两栏的顶端就对齐了。
-                SidebarCard(padding: 4) {
+                SidebarCard(padding: Self.profileCardPadding) {
                     ProfileSwitcher()
                         .padding(.top, 24)
                 }
-                .padding([.top, .horizontal], 10)
+                .padding([.top, .horizontal], Self.profileCardInset)
+                // 分组标签排成一行要多宽，加上卡片内外的留白，就是侧栏不让标签折行的最小宽度
+                .onPreferenceChange(ProfileSwitcherRowWidthKey.self) { rowWidth in
+                    appState.sidebarMinWidth = rowWidth + (Self.profileCardPadding + Self.profileCardInset) * 2
+                }
             }
             ScrollView {
                 if appState.accounts.isEmpty {
