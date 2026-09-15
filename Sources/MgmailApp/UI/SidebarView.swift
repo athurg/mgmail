@@ -2,10 +2,13 @@ import SwiftUI
 
 /// 左栏：账户与邮箱/标签。
 ///
-/// 结构（仿 Apple Mail）：
-/// - 顶部「智能邮箱」：跨账号聚合，只放日常真会一起看的收件箱与星标。
-/// - 账号分组：每个账号一个分组，内含该账号的全部标签——固定邮箱、
-///   收件箱分类（CATEGORY_*）、自定义标签树。
+/// 结构（仿 Apple Mail 的内容，Telegram 的皮）：
+/// - 顶部「智能邮箱」卡片：跨账号聚合，只放日常真会一起看的收件箱与星标。
+/// - 每个账号一张卡片：账号头 + 该账号的全部标签——固定邮箱、收件箱分类（CATEGORY_*）、
+///   自定义标签树。卡片是玻璃材质、悬浮在侧栏底色上，卡与卡之间留空，一眼分得清哪个账号管哪些邮箱。
+///
+/// 不用 `List`：List 的选中高亮、行底都是一行一块，拼不出一张连贯的悬浮卡片；
+/// 这里用 ScrollView + 自己画的行，选中高亮也自己画。
 struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var labelStore: LabelStore
@@ -13,28 +16,29 @@ struct SidebarView: View {
     /// 各账号是否有网络请求在飞，用于在账号条目上显示忙碌指示。
     @ObservedObject private var activity = NetworkActivity.shared
     @State private var expandedLabels: Set<String> = LabelExpansionStore.load()
-    /// 自定义标签分组里被折叠的账户（默认展开，记录“已折叠”）。
+    /// 被折叠的账户卡片（默认展开，记录“已折叠”）。
     @State private var collapsedAccounts: Set<String> = LabelExpansionStore.loadCollapsed()
     /// 待确认移除的账号。移除会删掉登录凭据和整份本地缓存，不该点一下就执行。
     @State private var pendingRemoval: Account?
-    /// 各账号行右侧文字块的实际高度，头像按它撑满整行（按账号 id 记，行数因备注/回溯日期而异）。
+    /// 各账号头右侧文字块的实际高度，头像按它定大小（按账号 id 记，行数因备注/回溯日期而异）。
     @State private var headerTextHeights: [String: CGFloat] = [:]
 
     var body: some View {
-        List(selection: Binding(
-            get: { appState.selection },
-            set: { appState.selection = $0 }
-        )) {
+        ScrollView {
             if appState.accounts.isEmpty {
                 emptyState
             } else if appState.activeAccounts.isEmpty {
                 emptyProfileState
             } else {
-                fixedLabelsSection
-                customLabelsSections
+                VStack(spacing: 12) {
+                    smartMailboxCard
+                    ForEach(appState.activeAccounts) { account in
+                        accountCard(account)
+                    }
+                }
+                .padding(10)
             }
         }
-        .listStyle(.sidebar)
         .safeAreaInset(edge: .top, spacing: 0) {
             if !appState.accounts.isEmpty {
                 ProfileSwitcher()
@@ -93,110 +97,64 @@ struct SidebarView: View {
 
     // MARK: - 智能邮箱（跨账号聚合）
 
-    @ViewBuilder
-    private var fixedLabelsSection: some View {
-        Section("智能邮箱") {
+    private var smartMailboxCard: some View {
+        SidebarCard {
+            Text("智能邮箱")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.top, 4)
+                .padding(.bottom, 2)
             // 汇总当前分组的所有账号。只放收件箱和星标——已发送、草稿、垃圾邮件、
-            // 废纸篓都是「针对某个账号」才有意义的，去下面各账号自己的分组里看。
+            // 废纸篓都是「针对某个账号」才有意义的，去下面各账号自己的卡片里看。
             ForEach(StandardMailbox.smart) { box in
-                Label(box.name, systemImage: box.systemImage)
-                    .tag(MailboxSelection(accountID: nil, labelID: box.id, labelName: box.name))
+                MailboxRow(title: box.name, systemImage: box.systemImage,
+                           selection: MailboxSelection(accountID: nil, labelID: box.id, labelName: box.name))
             }
         }
     }
 
-    // MARK: - 账号分组（账户 → 该账号的全部标签）
+    // MARK: - 账号卡片（账户 → 该账号的全部标签）
 
-    @ViewBuilder
-    private var customLabelsSections: some View {
-        ForEach(appState.activeAccounts) { account in
-            let tree = LabelTree.build(labelStore.userLabels(for: account.id))
-            let categories = labelStore.categories(for: account.id)
-            let collapsed = collapsedAccounts.contains(account.id)
-            // 可折叠：点账号名（分组头）隐藏/展开该账号的标签列表。默认展开。
-            //
-            // 整个分组（账号头 + 它的邮箱和标签）垫在同一块圆角卡片上：账号头是卡片上沿、
-            // 中间每一行是平直的一段、当前可见的最后一行作下沿。List 的行底是一行一块，
-            // 只有这样拼才能让它们连成一整张卡，账号和它的邮箱看起来才是一个整体。
-            // 下沿落在哪一行取决于标签树和「分类」组当下折叠到什么程度，所以要一层层往下传。
-            let categoriesOpen = expandedLabels.contains("cat:\(account.id)")
-            Section(isExpanded: accountBinding(account.id)) {
+    private func accountCard(_ account: Account) -> some View {
+        let tree = LabelTree.build(labelStore.userLabels(for: account.id))
+        let categories = labelStore.categories(for: account.id)
+        let collapsed = collapsedAccounts.contains(account.id)
+        return SidebarCard {
+            accountHeader(account, collapsed: collapsed)
+            if !collapsed {
                 // 该账号自己的固定邮箱：顶部是聚合视图，这里才能单看一个账号
                 ForEach(StandardMailbox.all) { box in
-                    Label(box.name, systemImage: box.systemImage)
-                        .tag(MailboxSelection(accountID: account.id, labelID: box.id,
-                                              labelName: "\(account.displayName) · \(box.name)"))
-                        .cardBottom(tree.isEmpty && categories.isEmpty && box.id == StandardMailbox.all.last?.id)
+                    MailboxRow(title: box.name, systemImage: box.systemImage,
+                               selection: MailboxSelection(accountID: account.id, labelID: box.id,
+                                                           labelName: "\(account.displayName) · \(box.name)"))
                 }
                 // 收件箱分类（主要/社交/推广…）：条目多且不常用，收进一个默认折叠的组
                 if !categories.isEmpty {
-                    DisclosureGroup(isExpanded: groupBinding("cat:\(account.id)")) {
+                    let groupID = "cat:\(account.id)"
+                    MailboxRow(title: "分类", systemImage: "square.grid.2x2", selection: nil,
+                               disclosure: groupBinding(groupID))
+                    if expandedLabels.contains(groupID) {
                         ForEach(categories) { category in
-                            Label(category.name, systemImage: category.systemImage)
-                                .tag(MailboxSelection(accountID: account.id, labelID: category.id,
-                                                      labelName: "\(account.displayName) · \(category.name)"))
-                                .cardBottom(tree.isEmpty && category.id == categories.last?.id)
+                            MailboxRow(title: category.name, systemImage: category.systemImage,
+                                       selection: MailboxSelection(accountID: account.id, labelID: category.id,
+                                                                   labelName: "\(account.displayName) · \(category.name)"),
+                                       depth: 1)
                         }
-                    } label: {
-                        Label("分类", systemImage: "square.grid.2x2")
-                            .cardBottom(tree.isEmpty && !categoriesOpen)
                     }
                 }
                 ForEach(tree) { node in
-                    LabelNodeView(node: node, accountID: account.id, expanded: $expandedLabels,
-                                  closesCard: node.id == tree.last?.id)
+                    LabelNodeView(node: node, accountID: account.id, expanded: $expandedLabels)
                 }
-            } header: {
-                accountHeader(account)
-                    .listRowBackground(AccountCard(piece: collapsed ? .whole : .top))
-            }
-            .listRowBackground(AccountCard(piece: .middle))
-        }
-    }
-
-    /// 自定义标签分组的展开绑定（默认展开，记录“已折叠”）。
-    private func accountBinding(_ id: String) -> Binding<Bool> {
-        Binding(
-            get: { !collapsedAccounts.contains(id) },
-            set: { isOpen in
-                if isOpen { collapsedAccounts.remove(id) } else { collapsedAccounts.insert(id) }
-                LabelExpansionStore.saveCollapsed(collapsedAccounts)
-            }
-        )
-    }
-
-    // MARK: - 其它
-
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("暂无账户", systemImage: "person.crop.circle.badge.plus")
-        } description: {
-            if appState.hasOAuthConfig {
-                Text("从菜单栏「账号 → 账号与分组…」添加你的 Gmail")
-            } else {
-                Text("先完成 OAuth 配置，再添加账户")
             }
         }
     }
 
-    /// 当前分组里一个账号都没有时的占位。
-    private var emptyProfileState: some View {
-        ContentUnavailableView {
-            Label("该分组暂无账号", systemImage: "person.2.slash")
-        } description: {
-            Text("右键分组标签选「管理分组…」把账号加进来，或再点一次该标签回到全部账号")
-        }
-    }
-
-    private func accountHeader(_ account: Account) -> some View {
-        HStack(spacing: 6) {
+    private func accountHeader(_ account: Account, collapsed: Bool) -> some View {
+        HStack(spacing: 8) {
             // 头像兼作该账号的刷新按钮：鼠标移上去变成刷新图标，点一下只刷这个账号。
-            // 放在行首而不是行尾，是因为可折叠分组头在悬停时会于右端冒出系统的「显示/隐藏」
-            // 按钮，把整行往左挤——摆在最右的按钮鼠标一靠近就挪走，点不着；行首不受影响。
-            //
             // 尺寸跟着右侧文字块走：有备注、有回溯日期的账号是三行，头像就跟着大；
-            // 只有一行名字的账号头像也随之缩小，不会把行高硬拉大。不撑满整行——
-            // 满高的圆会比下面邮箱行的图标大出一圈，看着压人，留一点上下呼吸。
+            // 只有一行名字的账号头像也随之缩小。不撑满整行，留一点上下呼吸。
             AvatarRefreshButton(account: account,
                                 size: avatarSize(for: account.id),
                                 reloadToken: appState.avatarReloadToken) {
@@ -204,7 +162,7 @@ struct SidebarView: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text(account.displayName)
-                    .font(.caption)
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if !account.note.isEmpty {
@@ -232,12 +190,14 @@ struct SidebarView: View {
                 .scaleEffect(0.6)
                 .frame(width: 12, height: 12)
                 .opacity(activity.busyAccounts.contains(account.id) ? 1 : 0)
+            DisclosureChevron(isExpanded: !collapsed)
         }
         .animation(.easeInOut(duration: 0.15), value: activity.busyAccounts.contains(account.id))
-        // 左边挪 6pt，让头像圆心对上下面邮箱行图标的中线；底色由分组卡片（AccountCard）统一画。
         .padding(.vertical, 6)
-        .padding(.leading, 6)
-        .padding(.trailing, 6)
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        // 点账号头折叠/展开这张卡（头像那一小块除外，它是刷新）
+        .onTapGesture { toggleCollapsed(account.id) }
         .help(account.email)
         .contextMenu {
             Button("获取新邮件") { refresh(account.id) }
@@ -258,6 +218,38 @@ struct SidebarView: View {
         return max(AvatarRefreshButton.minSize, size)
     }
 
+    private func toggleCollapsed(_ id: String) {
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if collapsedAccounts.contains(id) { collapsedAccounts.remove(id) } else { collapsedAccounts.insert(id) }
+        }
+        LabelExpansionStore.saveCollapsed(collapsedAccounts)
+    }
+
+    // MARK: - 其它
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("暂无账户", systemImage: "person.crop.circle.badge.plus")
+        } description: {
+            if appState.hasOAuthConfig {
+                Text("从菜单栏「账号 → 账号与分组…」添加你的 Gmail")
+            } else {
+                Text("先完成 OAuth 配置，再添加账户")
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 240)
+    }
+
+    /// 当前分组里一个账号都没有时的占位。
+    private var emptyProfileState: some View {
+        ContentUnavailableView {
+            Label("该分组暂无账号", systemImage: "person.2.slash")
+        } description: {
+            Text("右键分组标签选「管理分组…」把账号加进来，或再点一次该标签回到全部账号")
+        }
+        .frame(maxWidth: .infinity, minHeight: 240)
+    }
+
     /// 手动刷新一个账号：标签拉新，然后按位点同步邮件变化。
     private func refresh(_ account: String) {
         Task { await MailRefresh.account(account, labels: labelStore, mail: mailStore) }
@@ -274,46 +266,132 @@ struct SidebarView: View {
         Binding(
             get: { expandedLabels.contains(id) },
             set: { isOpen in
-                if isOpen { expandedLabels.insert(id) } else { expandedLabels.remove(id) }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isOpen { expandedLabels.insert(id) } else { expandedLabels.remove(id) }
+                }
                 LabelExpansionStore.save(expandedLabels)
             }
         )
     }
 }
 
-/// 账号分组卡片的一段。整张卡由多行的行底拼成：账号头是 `.top`，中间各行 `.middle`，
-/// 末尾空白行 `.bottom`；分组折叠起来只剩账号头时用 `.whole`。
-private struct AccountCard: View {
-    enum Piece { case top, middle, bottom, whole }
-    let piece: Piece
+// MARK: - 卡片与行
 
-    private static let radius: CGFloat = 8
-    /// 卡片左右各让出一点，别贴着侧栏边缘；和系统选中高亮的内缩差不多。
-    private static let inset: CGFloat = 6
+/// 侧栏里的一张悬浮卡片：玻璃材质、圆角、和邻卡之间留空。
+///
+/// macOS 26 起用系统的 Liquid Glass；再老的系统退回普通半透明材质加一圈细边和淡影，形状一致。
+private struct SidebarCard<Content: View>: View {
+    @ViewBuilder var content: Content
 
     var body: some View {
-        let r = Self.radius
-        let top: CGFloat = (piece == .top || piece == .whole) ? r : 0
-        let bottom: CGFloat = (piece == .bottom || piece == .whole) ? r : 0
-        UnevenRoundedRectangle(topLeadingRadius: top, bottomLeadingRadius: bottom,
-                               bottomTrailingRadius: bottom, topTrailingRadius: top,
-                               style: .continuous)
-            .fill(.quaternary)
-            .padding(.horizontal, Self.inset)
-            // 卡与卡之间留出明显的空隙，上沿那一段往下让
-            .padding(.top, (piece == .top || piece == .whole) ? 10 : 0)
+        VStack(alignment: .leading, spacing: 1) {
+            content
+        }
+        .padding(5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .modifier(GlassCard(radius: 12))
     }
 }
 
-private extension View {
-    /// 标记这一行是账号卡片的下沿。传 false 不改行底，沿用分组统一的中段。
-    @ViewBuilder
-    func cardBottom(_ isBottom: Bool) -> some View {
-        if isBottom {
-            listRowBackground(AccountCard(piece: .bottom))
+private struct GlassCard: ViewModifier {
+    let radius: CGFloat
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        if #available(macOS 26, *) {
+            content.glassEffect(.regular, in: shape)
         } else {
-            self
+            content
+                .background(.regularMaterial, in: shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.08)))
+                .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
         }
+    }
+}
+
+/// 卡片里的一行邮箱/标签。选中时铺一层强调色，鼠标悬停时淡淡提亮。
+///
+/// `selection` 为 nil 的行不可选（纯中间层、「分类」这类只负责展开收起的组头）。
+/// 带 `disclosure` 的行右端有个小箭头，点整行切换展开。
+private struct MailboxRow<Icon: View>: View {
+    let title: String
+    let icon: Icon
+    let selection: MailboxSelection?
+    var depth: Int = 0
+    var disclosure: Binding<Bool>? = nil
+    @EnvironmentObject private var appState: AppState
+    @State private var hovering = false
+
+    init(title: String, systemImage: String, selection: MailboxSelection?,
+         depth: Int = 0, disclosure: Binding<Bool>? = nil) where Icon == Image {
+        self.title = title
+        self.icon = Image(systemName: systemImage)
+        self.selection = selection
+        self.depth = depth
+        self.disclosure = disclosure
+    }
+
+    init(title: String, selection: MailboxSelection?, depth: Int = 0,
+         disclosure: Binding<Bool>? = nil, @ViewBuilder icon: () -> Icon) {
+        self.title = title
+        self.icon = icon()
+        self.selection = selection
+        self.depth = depth
+        self.disclosure = disclosure
+    }
+
+    private var isSelected: Bool {
+        guard let selection, let current = appState.selection else { return false }
+        return current.accountID == selection.accountID && current.labelID == selection.labelID
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            icon
+                .font(.system(size: 13))
+                .frame(width: 18)
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            if let disclosure {
+                DisclosureChevron(isExpanded: disclosure.wrappedValue, onSelection: isSelected)
+            }
+        }
+        .font(.system(size: 13))
+        .foregroundStyle(isSelected ? Color.white : (selection == nil ? Color.secondary : Color.primary))
+        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .padding(.leading, CGFloat(depth) * 16)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isSelected ? Color.accentColor : (hovering ? Color.primary.opacity(0.06) : Color.clear))
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if let disclosure {
+                disclosure.wrappedValue.toggle()
+            } else if let selection {
+                appState.selection = selection
+            }
+        }
+        .onHover { hovering = $0 }
+    }
+}
+
+/// 展开/折叠指示：向右的小箭头，展开时转成向下。
+private struct DisclosureChevron: View {
+    let isExpanded: Bool
+    /// 落在选中行（强调色底）上时用白色，否则次要色。
+    var onSelection = false
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(onSelection ? Color.white : Color.secondary)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .frame(width: 12)
+            .accessibilityLabel(isExpanded ? "折叠" : "展开")
     }
 }
 
@@ -354,27 +432,19 @@ private struct AvatarRefreshButton: View {
     }
 }
 
-/// 递归渲染一个标签节点：有子节点时用可折叠的 DisclosureGroup。
+/// 递归渲染一个标签节点：有子节点时行尾带展开箭头，展开后子节点缩进一级列在下面。
 private struct LabelNodeView: View {
     let node: LabelNode
     let accountID: String
     @Binding var expanded: Set<String>
-    /// 这个节点是不是账号卡片里最末的一支：是的话，它当前可见的最后一行要画成卡片下沿。
-    var closesCard = false
+    var depth = 0
     @EnvironmentObject private var appState: AppState
 
     var body: some View {
-        if node.children.isEmpty {
-            interactiveRow.cardBottom(closesCard)
-        } else {
-            DisclosureGroup(isExpanded: expandBinding) {
-                ForEach(node.children) { child in
-                    LabelNodeView(node: child, accountID: accountID, expanded: $expanded,
-                                  closesCard: closesCard && child.id == node.children.last?.id)
-                }
-            } label: {
-                // 折叠着时自己就是最后一行；展开了下沿归最后一个子节点
-                interactiveRow.cardBottom(closesCard && !expanded.contains(node.id))
+        interactiveRow
+        if !node.children.isEmpty, expanded.contains(node.id) {
+            ForEach(node.children) { child in
+                LabelNodeView(node: child, accountID: accountID, expanded: $expanded, depth: depth + 1)
             }
         }
     }
@@ -405,20 +475,31 @@ private struct LabelNodeView: View {
         }
     }
 
-    /// 单行标签（显示末段名 + 颜色标记），有真实标签时可被选中。
-    @ViewBuilder
+    /// 单行标签（显示末段名 + 颜色标记），有真实标签时可被选中；有子节点时点行尾箭头展开。
+    ///
+    /// 有子节点又有真实标签的中间层，点行选中、点箭头展开，两件事分开。
     private var row: some View {
         let label = node.label
-        let content = Label {
-            Text(node.title)
-        } icon: {
+        let selection = label.map {
+            MailboxSelection(accountID: accountID, labelID: $0.id, labelName: $0.name)
+        }
+        return MailboxRow(title: node.title, selection: selection, depth: depth,
+                          disclosure: node.children.isEmpty || selection != nil ? nil : expandBinding) {
             Image(systemName: label?.uiColor == nil ? "tag" : "tag.fill")
                 .foregroundStyle(label?.uiColor ?? Color.secondary)
         }
-        if let label {
-            content.tag(MailboxSelection(accountID: accountID, labelID: label.id, labelName: label.name))
-        } else {
-            content.foregroundStyle(.secondary) // 纯中间层，不可选
+        .overlay(alignment: .trailing) {
+            // 可选中的中间层：箭头单独成一个按钮，不和选中抢同一次点击
+            if !node.children.isEmpty, let selection {
+                let selected = appState.selection?.accountID == selection.accountID
+                    && appState.selection?.labelID == selection.labelID
+                Button { expandBinding.wrappedValue.toggle() } label: {
+                    DisclosureChevron(isExpanded: expanded.contains(node.id), onSelection: selected)
+                        .padding(.horizontal, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -426,7 +507,9 @@ private struct LabelNodeView: View {
         Binding(
             get: { expanded.contains(node.id) },
             set: { isOn in
-                if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    if isOn { expanded.insert(node.id) } else { expanded.remove(node.id) }
+                }
                 LabelExpansionStore.save(expanded)
             }
         )
