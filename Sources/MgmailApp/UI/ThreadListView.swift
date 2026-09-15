@@ -28,6 +28,8 @@ struct ThreadListView: View {
     @State private var isFirstLoad = true
     /// 冷启动那次全账号刷新已经跑过了，后面切分组不该再来一遍。
     @State private var didColdStart = false
+    /// 离开某个邮箱时它的选中项。切回来时接着看原来那封，而不是从头再找。
+    @State private var rememberedSelections: [MailboxSelection: Set<SelectedThread>] = [:]
 
     private var readFilter: ReadFilter { ReadFilter(rawValue: readFilterRaw) ?? .all }
     /// 当前范围。存的账号若已经不在（账号被移除、或换了分组），回落到「当前邮箱」——
@@ -95,7 +97,12 @@ struct ThreadListView: View {
         // 整栏一张玻璃面板，和侧栏的卡片、右栏的正文是同一套皮
         .glassPanel()
         // 选择/显示方式/过滤器变化：纯本地重算，不联网
-        .onChange(of: viewKey, initial: true) { _, _ in
+        .onChange(of: viewKey, initial: true) { old, new in
+            let switchedMailbox = old.selection != new.selection
+            // 离开时把这个邮箱的选中项记下来，切回来还能接着看
+            if switchedMailbox, let leaving = old.selection {
+                rememberedSelections[leaving] = appState.selectedThreads
+            }
             // 协调器的引用在这里就绪，不依赖列表有没有内容（空邮箱时 list 不会被求值）
             rows.model = model
             rows.appState = appState
@@ -109,9 +116,14 @@ struct ThreadListView: View {
             }
             // 换了地方看，右栏里还开着的那封若不在新列表里，就一起收掉：
             // 列表里找不到它、右栏却还显示着，会让人以为它就在这个邮箱里。
-            // 同时在两个邮箱里的（比如既在收件箱又加了星标）照旧留着。
+            // 同时在两个邮箱里的（比如既在收件箱又加了星标）照旧留着；
+            // 一封都留不住时，才换成上次离开这个邮箱时看的那封（若它还在）。
             let visible = Set(model.summaries.map(\.key))
-            let kept = appState.selectedThreads.filter { visible.contains($0) }
+            var kept = appState.selectedThreads.filter { visible.contains($0) }
+            if kept.isEmpty, switchedMailbox, let arriving = new.selection,
+               let remembered = rememberedSelections[arriving] {
+                kept = remembered.filter { visible.contains($0) }
+            }
             if kept != appState.selectedThreads {
                 appState.selectedThreads = kept
             }
