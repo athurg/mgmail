@@ -181,10 +181,11 @@ struct SidebarView: View {
             // 放在行首而不是行尾，是因为可折叠分组头在悬停时会于右端冒出系统的「显示/隐藏」
             // 按钮，把整行往左挤——摆在最右的按钮鼠标一靠近就挪走，点不着；行首不受影响。
             //
-            // 尺寸跟着右侧文字块走：有备注、有回溯日期的账号是三行，头像就撑到三行高；
-            // 只有一行名字的账号头像也随之缩小，不会把行高硬拉大。
+            // 尺寸跟着右侧文字块走：有备注、有回溯日期的账号是三行，头像就跟着大；
+            // 只有一行名字的账号头像也随之缩小，不会把行高硬拉大。不撑满整行——
+            // 满高的圆会比下面邮箱行的图标大出一圈，看着压人，留一点上下呼吸。
             AvatarRefreshButton(account: account,
-                                size: headerTextHeights[account.id] ?? AvatarRefreshButton.minSize,
+                                size: avatarSize(for: account.id),
                                 reloadToken: appState.avatarReloadToken) {
                 refresh(account.id)
             }
@@ -209,7 +210,7 @@ struct SidebarView: View {
                 }
             }
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                headerTextHeights[account.id] = max(AvatarRefreshButton.minSize, height.rounded())
+                headerTextHeights[account.id] = height
             }
             Spacer(minLength: 4)
             // 该账号有请求在飞时转圈；空闲时留着同样大小的空位，转圈来去时文字不会跟着挪。
@@ -220,6 +221,18 @@ struct SidebarView: View {
                 .opacity(activity.busyAccounts.contains(account.id) ? 1 : 0)
         }
         .animation(.easeInOut(duration: 0.15), value: activity.busyAccounts.contains(account.id))
+        // 账号信息垫一块淡底色，和下面缩进一致的邮箱行区分开——不然三行小字和一排邮箱
+        // 挤在一起，账号头看着像是列表的一部分。左边挪 6pt，让头像圆心对上下面
+        // 邮箱行图标的中线；底色再往左探一点，左缘和选中行的高亮条齐。
+        .padding(.vertical, 5)
+        .padding(.leading, 6)
+        .padding(.trailing, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(.quaternary.opacity(0.6))
+                .padding(.leading, -7)
+        )
+        .padding(.top, 6)
         .help(account.email)
         .contextMenu {
             Button("获取新邮件") { refresh(account.id) }
@@ -231,6 +244,13 @@ struct SidebarView: View {
             SettingsLink { Text("账号与分组…") }
             Button("移除账户…", role: .destructive) { pendingRemoval = account }
         }
+    }
+
+    /// 账号头像的边长：右侧文字块高度的八成，向下取整到偶数以免半像素发虚，下限 16pt。
+    private func avatarSize(for account: String) -> CGFloat {
+        guard let textHeight = headerTextHeights[account] else { return AvatarRefreshButton.minSize }
+        let size = (textHeight * 0.8 / 2).rounded(.down) * 2
+        return max(AvatarRefreshButton.minSize, size)
     }
 
     /// 手动刷新一个账号：标签拉新，然后按位点同步邮件变化。
