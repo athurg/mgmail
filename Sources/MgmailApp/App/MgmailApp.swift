@@ -206,6 +206,7 @@ struct RootView: View {
         // 挂在它身上的底色会跟着一起重排，顶上藏着的标题栏那一段就会露出窗口白底闪一下。
         // 铺在根上，它的大小只跟窗口走，和里面怎么重排无关。
         .background(WindowBackdrop().ignoresSafeArea())
+        .background(MainWindowChrome())
         .sheet(isPresented: Binding(
             get: { !appState.hasOAuthConfig },
             set: { _ in }
