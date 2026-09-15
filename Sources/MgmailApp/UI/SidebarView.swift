@@ -58,11 +58,33 @@ struct SidebarView: View {
             Text("将从 Mgmail 移除「\(pendingRemoval?.email ?? "")」并删除其本地登录凭据与缓存。此操作不影响你的 Gmail 账户本身。")
         }
         .task(id: appState.activeAccounts.map(\.id)) {
-            // 只补齐本地还没有的账号标签；已有缓存就直接用，要最新的走账号行上的刷新按钮
+            // 只补齐本地还没有的账号标签；已有缓存就直接用，要最新的走「获取新邮件」
             await withTaskGroup(of: Void.self) { group in
                 for account in appState.activeAccounts {
                     group.addTask { await labelStore.loadIfNeeded(for: account.id) }
                 }
+            }
+        }
+        // 菜单栏「邮箱 → 获取新邮件」发来的同步请求。菜单拿不到这里的环境对象，
+        // 只能经 AppState 转一手；落点放在侧栏，和工具栏、账号右键菜单的刷新走同一条路。
+        .onChange(of: appState.syncRequest) { _, request in
+            guard let request else { return }
+            if let account = request.accountID {
+                refresh(account)
+            } else {
+                refreshAll()
+            }
+        }
+        // 「获取所有新邮件」落在标题栏的侧栏那一段（紧挨着「显示/隐藏边栏」）：
+        // 它是全局动作，不属于哪个账号。这一段只有边栏那么宽，
+        // 再多放一个就得溢出到「更多」菜单里去，所以「新邮件」放在中栏那一段（见 ThreadListView）。
+        .toolbar {
+            ToolbarItem {
+                Button { refreshAll() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("获取所有新邮件（⇧⌘N）")
+                .disabled(appState.activeAccounts.isEmpty)
             }
         }
     }
@@ -175,28 +197,22 @@ struct SidebarView: View {
                 }
             }
             Spacer(minLength: 4)
-            // 该账号有请求在飞时转圈；空闲时同一个位置放刷新按钮，
-            // 两者尺寸一致，切换时分组头不会跟着跳。
-            if activity.busyAccounts.contains(account.id) {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
-                    .frame(width: 12, height: 12)
-                    .transition(.opacity)
-            } else {
-                Button { refresh(account) } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.caption2)
-                        .frame(width: 12, height: 12)
-                }
-                .buttonStyle(.borderless)
-                .help("刷新该账号（同步邮件与标签）")
-                .transition(.opacity)
-            }
+            // 该账号有请求在飞时转圈；空闲时留着同样大小的空位，转圈来去时文字不会跟着挪。
+            //
+            // 这里**不放**刷新按钮：可折叠的分组头在鼠标悬停时会于右端冒出系统的「显示/隐藏」
+            // 按钮，把整行往左挤——摆在最右的按钮鼠标一靠近就挪走，点不着。单个账号要刷新
+            // 走右键菜单或「邮箱 → 获取新邮件」，全部刷新用工具栏那颗。
+            ProgressView()
+                .controlSize(.small)
+                .scaleEffect(0.6)
+                .frame(width: 12, height: 12)
+                .opacity(activity.busyAccounts.contains(account.id) ? 1 : 0)
         }
         .animation(.easeInOut(duration: 0.15), value: activity.busyAccounts.contains(account.id))
         .help(account.email)
         .contextMenu {
+            Button("获取新邮件") { refresh(account.id) }
+            Divider()
             Button("新建标签…") {
                 appState.labelEditTarget = LabelEditTarget(accountID: account.id, label: nil)
             }
@@ -207,8 +223,14 @@ struct SidebarView: View {
     }
 
     /// 手动刷新一个账号：标签拉新，然后按位点同步邮件变化。
-    private func refresh(_ account: Account) {
-        Task { await MailRefresh.account(account.id, labels: labelStore, mail: mailStore) }
+    private func refresh(_ account: String) {
+        Task { await MailRefresh.account(account, labels: labelStore, mail: mailStore) }
+    }
+
+    /// 刷新当前分组里的全部账号。
+    private func refreshAll() {
+        let ids = appState.activeAccounts.map(\.id)
+        Task { await MailRefresh.accounts(ids, labels: labelStore, mail: mailStore) }
     }
 
     /// 「分类」等次级分组的展开绑定（默认折叠，记录“已展开”，与标签树同一套持久化）。
