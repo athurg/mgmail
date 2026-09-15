@@ -84,7 +84,7 @@ final class SyncScheduler: ObservableObject {
         await afterEach?()
     }
 
-    /// 立即同步一次。只有定时器和睡眠唤醒会调它——手动刷新走的是侧栏账号行上的按钮，
+    /// 立即同步一次。只有定时器和睡眠唤醒会调它——手动刷新走的是工具栏、账号右键菜单和菜单栏，
     /// 那条路直接调 `MailRefresh`，不经过调度器，因此不会被这里的互斥挡住。
     func syncNow() async {
         guard !isSyncing else { return }

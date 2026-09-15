@@ -55,7 +55,7 @@ final class LabelStore: ObservableObject {
     /// 只在本地什么都没有时才联网。
     ///
     /// 标签是低频数据，没必要每次切分组都重新拉一遍；要拿最新的，
-    /// 点侧栏账号行上的刷新按钮（那会走 `load(force:)`）。
+    /// 走「获取新邮件」（那会走 `load(force:)`）。
     func loadIfNeeded(for account: String) async {
         if labelsByAccount[account] != nil { return }
         if let cached = await MailCache.shared.labels(account: account), !cached.isEmpty {
