@@ -107,6 +107,14 @@ struct ThreadListView: View {
             if let selection = appState.selection {
                 Task { await ensureSpecialMailbox(selection) }
             }
+            // 换了地方看，右栏里还开着的那封若不在新列表里，就一起收掉：
+            // 列表里找不到它、右栏却还显示着，会让人以为它就在这个邮箱里。
+            // 同时在两个邮箱里的（比如既在收件箱又加了星标）照旧留着。
+            let visible = Set(model.summaries.map(\.key))
+            let kept = appState.selectedThreads.filter { visible.contains($0) }
+            if kept != appState.selectedThreads {
+                appState.selectedThreads = kept
+            }
         }
         .task(id: appState.activeAccounts.map(\.id)) {
             let ids = appState.activeAccounts.map(\.id)
