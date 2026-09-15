@@ -18,10 +18,10 @@ struct GoogleConfig {
         "profile",
     ]
 
-    /// 应用支持目录：`~/Library/Application Support/Mgmail`
+    /// 应用支持目录：`~/Library/Application Support/Mgmail`；开发包是 `…/Mgmail Dev`（见 `AppFlavor`）。
     static var supportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("Mgmail", isDirectory: true)
+        return base.appendingPathComponent(AppFlavor.current.supportDirectoryName, isDirectory: true)
     }
 
     /// oauth_client.json 的期望路径。

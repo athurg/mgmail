@@ -131,6 +131,8 @@ final class AppState: ObservableObject {
         // 恢复上次选中的分组；若指向已不存在的分组则回落到「全部」。
         let savedID = ProfileStore.loadCurrentID()
         currentProfileID = profiles.contains { $0.id == savedID } ? savedID : nil
+        // 开发包首次启动：从正式包那边抄一份 OAuth 客户端配置，省得再去 Google Cloud 下载一遍
+        DevSeed.run()
         hasOAuthConfig = GoogleConfig.load() != nil
         // 磁盘布局的一次性迁移与陈旧文件清理。必须同步跑在任何缓存读写之前，
         // 否则会照着旧路径读出空结果、再照新路径写一份，等于把数据劈成两半。

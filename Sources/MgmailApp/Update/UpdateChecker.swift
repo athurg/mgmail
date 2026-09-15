@@ -26,8 +26,9 @@ final class UpdateChecker: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lastCheckedAt: Date?
 
-    /// 这个进程能不能更新自己：`swift run` 直接跑的裸可执行文件没有 bundle，无从替换。
-    static let isAvailable = AppVersion.current != nil
+    /// 这个进程能不能更新自己：`swift run` 直接跑的裸可执行文件没有 bundle，无从替换；
+    /// 开发包（`Mgmail Dev.app`）有 bundle 但换成正式包就不是它自己了，同样不参与。
+    static let isAvailable = AppVersion.current != nil && AppFlavor.current.canSelfUpdate
     /// 定时那一路两次检查之间至少隔多久。
     static let minInterval: TimeInterval = 60 * 60
     /// 调试用：环境变量 `MGMAIL_UPDATE_MANIFEST_URL` 指到本地起的 HTTP 服务上，
@@ -200,7 +201,7 @@ final class UpdateChecker: ObservableObject {
     /// 发现新版：问装不装。装的话把设置窗口开到「更新」页让人看得见进度，下完再问一次要不要重启。
     private func offerInstall(_ manifest: UpdateManifest) {
         let alert = NSAlert()
-        alert.messageText = "Mgmail 有新版本：\(manifest.appVersion.fullText)"
+        alert.messageText = "\(AppFlavor.current.displayName) 有新版本：\(manifest.appVersion.fullText)"
         var lines = ["当前版本 \(AppVersion.current?.fullText ?? "")。"]
         if let notes = manifest.notes, !notes.isEmpty {
             lines.append("")

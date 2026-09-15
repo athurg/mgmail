@@ -10,7 +10,7 @@ struct UpdateSettingsPane: View {
         Form {
             Section {
                 LabeledContent("当前版本") {
-                    Text(AppVersion.current?.fullText ?? "未打包（swift run）")
+                    Text(versionText)
                         .foregroundStyle(.secondary)
                 }
                 if UpdateChecker.isAvailable {
@@ -26,8 +26,13 @@ struct UpdateSettingsPane: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                } else if AppVersion.current == nil {
+                    Text("直接 swift run 跑起来的进程没有 .app 包，没法替换自己。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("直接 swift run 跑起来的进程没有 .app 包，没法替换自己。用 Scripts/build_app.sh 打包后再试。")
+                    Text("这是本机打包的开发包（Mgmail Dev），不参与自动更新：换成正式包就不是它自己了。正式包由 Scripts/package_dist.sh 或 GitHub Release 提供。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -51,6 +56,11 @@ struct UpdateSettingsPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var versionText: String {
+        guard let version = AppVersion.current else { return "未打包（swift run）" }
+        return AppFlavor.current == .dev ? "\(version.fullText) · 开发包" : version.fullText
     }
 
     private var currentChannel: UpdateChannel {
