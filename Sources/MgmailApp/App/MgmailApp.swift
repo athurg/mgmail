@@ -197,12 +197,15 @@ struct RootView: View {
                 MessageDetailView()
             }
             .ignoresSafeArea(edges: .top)
-            .background(WindowBackdrop().ignoresSafeArea())
             // 标题栏藏着看不见它，但「窗口」菜单和 Mission Control 里认它。
             .navigationTitle(AppFlavor.current.displayName)
             // 横贯整个窗口底部的网络活动栏（没有活动时不占位）
             ActivityStatusBar()
         }
+        // 桌布铺在整个窗口内容的最底下，不挂在三栏布局上：活动栏收起时三栏要长高一截，
+        // 挂在它身上的底色会跟着一起重排，顶上藏着的标题栏那一段就会露出窗口白底闪一下。
+        // 铺在根上，它的大小只跟窗口走，和里面怎么重排无关。
+        .background(WindowBackdrop().ignoresSafeArea())
         .sheet(isPresented: Binding(
             get: { !appState.hasOAuthConfig },
             set: { _ in }
