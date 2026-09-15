@@ -26,15 +26,17 @@ final class UpdateChecker: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lastCheckedAt: Date?
 
-    /// 这个进程能不能更新自己：`swift run` 直接跑的裸可执行文件没有 bundle，无从替换；
-    /// 开发包（`Mgmail Dev.app`）有 bundle 但换成正式包就不是它自己了，同样不参与。
-    static let isAvailable = AppVersion.current != nil && AppFlavor.current.canSelfUpdate
-    /// 定时那一路两次检查之间至少隔多久。
-    static let minInterval: TimeInterval = 60 * 60
     /// 调试用：环境变量 `MGMAIL_UPDATE_MANIFEST_URL` 指到本地起的 HTTP 服务上，
     /// 不用真发一个 Release 也能把下载、校验、替换、重启整条路走一遍。
     static let manifestOverride: URL? = ProcessInfo.processInfo
         .environment["MGMAIL_UPDATE_MANIFEST_URL"].flatMap(URL.init(string:))
+    /// 这个进程能不能更新自己：`swift run` 直接跑的裸可执行文件没有 bundle，无从替换；
+    /// 开发包（`Mgmail Dev.app`）有 bundle 但换成正式包就不是它自己了，同样不参与——
+    /// 除非带着上面那个调试变量启动，那是明确要在开发包上把整条链路走一遍。
+    static let isAvailable = AppVersion.current != nil
+        && (AppFlavor.current.canSelfUpdate || manifestOverride != nil)
+    /// 定时那一路两次检查之间至少隔多久。
+    static let minInterval: TimeInterval = 60 * 60
 
     /// 这次启动里已经弹过窗的构建号（用户点了「稍后」），不再烦他。
     private var promptedBuild: Int?
@@ -42,6 +44,8 @@ final class UpdateChecker: ObservableObject {
     var openSettings: (@MainActor () -> Void)?
     /// 同一时间只跑一个检查/下载。
     private var busy = false
+    /// 有弹窗正等用户答复。
+    private var prompting = false
 
     private init() {
         UpdateInstaller.cleanStaging()
@@ -79,31 +83,36 @@ final class UpdateChecker: ObservableObject {
         promptedBuild = manifest.build
         // 定时发现的：用户多半在别的应用里，Dock 图标跳一下提醒有话要说，不抢焦点
         NSApp.requestUserAttention(.informationalRequest)
-        offerInstall(manifest)
+        // 不在这里等他答复：这一路是同步每一轮末尾顺带调的，等下去下一轮同步也跟着停
+        Task { await offerInstall(manifest) }
     }
 
     /// 菜单里的「检查更新…」：查完直接告诉用户结果。
     func checkFromMenu() {
+        // 上一个弹窗还挂在窗口上，再点一次菜单只会叠出第二个
+        guard !prompting else { return }
         Task {
             if case .ready(let manifest, _) = phase {
-                offerRelaunch(manifest)
+                await offerRelaunch(manifest)
                 return
             }
             await check()
             switch phase {
             case .available(let manifest):
-                offerInstall(manifest)
+                await offerInstall(manifest)
             case .upToDate:
                 let alert = NSAlert()
                 alert.messageText = "已是最新版本"
                 alert.informativeText = "当前 \(AppVersion.current?.fullText ?? "")，\(channel.title)渠道没有更新的版本。"
-                alert.runModal()
+                alert.addButton(withTitle: "好")
+                await present(alert)
             case .failed(let text):
                 let alert = NSAlert()
                 alert.alertStyle = .warning
                 alert.messageText = "检查更新失败"
                 alert.informativeText = text
-                alert.runModal()
+                alert.addButton(withTitle: "好")
+                await present(alert)
             default:
                 break
             }
@@ -199,7 +208,7 @@ final class UpdateChecker: ObservableObject {
     // MARK: - 弹窗
 
     /// 发现新版：问装不装。装的话把设置窗口开到「更新」页让人看得见进度，下完再问一次要不要重启。
-    private func offerInstall(_ manifest: UpdateManifest) {
+    private func offerInstall(_ manifest: UpdateManifest) async {
         let alert = NSAlert()
         alert.messageText = "\(AppFlavor.current.displayName) 有新版本：\(manifest.appVersion.fullText)"
         var lines = ["当前版本 \(AppVersion.current?.fullText ?? "")。"]
@@ -211,13 +220,11 @@ final class UpdateChecker: ObservableObject {
         alert.addButton(withTitle: "下载并安装")
         alert.addButton(withTitle: "稍后")
         alert.addButton(withTitle: "跳过此版本")
-        switch alert.runModal() {
+        switch await present(alert) {
         case .alertFirstButtonReturn:
             showUpdatesPane()
-            Task {
-                await download()
-                if case .ready = phase { offerRelaunch(manifest) }
-            }
+            await download()
+            if case .ready = phase { await offerRelaunch(manifest) }
         case .alertThirdButtonReturn:
             skip()
         default:
@@ -226,15 +233,51 @@ final class UpdateChecker: ObservableObject {
     }
 
     /// 下好了：问现在重启还是等会儿。等会儿的话设置页里还有按钮。
-    private func offerRelaunch(_ manifest: UpdateManifest) {
+    private func offerRelaunch(_ manifest: UpdateManifest) async {
         let alert = NSAlert()
         alert.messageText = "\(manifest.appVersion.description) 已下载好"
         alert.informativeText = "重新启动 Mgmail 即完成安装。开着的撰写窗口会关掉，先把没写完的存成草稿。"
         alert.addButton(withTitle: "重新启动")
         alert.addButton(withTitle: "稍后")
-        if alert.runModal() == .alertFirstButtonReturn {
+        if await present(alert) == .alertFirstButtonReturn {
             installAndRelaunch()
         }
+    }
+
+    /// 弹出 `alert` 并等用户点按钮。
+    ///
+    /// 挂在当前窗口上当 sheet，而不是 `runModal()` 独立弹一个：独立弹的那种落在
+    /// 带菜单栏的那块屏幕上（有时还没排上屏），主窗口在另一台显示器上时用户根本
+    /// 看不见它，只见整个应用变灰、点哪儿都没反应；它也不进调度中心，翻遍所有窗口
+    /// 都找不着。sheet 贴在窗口上，窗口在哪它就在哪。一个窗口都没开的时候（关掉最后一个窗口进程不退出）才退回
+    /// 独立弹窗，这时把应用拉到前台、弹窗放到鼠标所在的那块屏幕上，至少能被看见。
+    @discardableResult
+    private func present(_ alert: NSAlert) async -> NSApplication.ModalResponse {
+        prompting = true
+        defer { prompting = false }
+        if let host = Self.hostWindow {
+            host.makeKeyAndOrderFront(nil)
+            return await withCheckedContinuation { continuation in
+                alert.beginSheetModal(for: host) { continuation.resume(returning: $0) }
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        alert.layout()
+        if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) {
+            var frame = alert.window.frame
+            frame.origin = CGPoint(x: screen.frame.midX - frame.width / 2, y: screen.frame.midY - frame.height / 2)
+            alert.window.setFrame(frame, display: false)
+        }
+        // 应用不在前台时 runModal 不一定把面板排上屏，先强行排上去
+        alert.window.orderFrontRegardless()
+        return alert.runModal()
+    }
+
+    /// 弹窗该挂到哪扇窗上：先拿正在用的那扇，其次任何一扇开着的普通窗口。
+    private static var hostWindow: NSWindow? {
+        let candidates = [NSApp.keyWindow, NSApp.mainWindow] + NSApp.windows
+        return candidates.lazy.compactMap { $0 }
+            .first { $0.isVisible && $0.canBecomeMain && $0.attachedSheet == nil }
     }
 
     /// 把设置窗口开到「更新」页，下载进度在那里看。
