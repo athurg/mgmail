@@ -36,7 +36,7 @@ if [[ ! -x "$BIN_PATH" ]]; then
   exit 1
 fi
 
-echo "==> 组装 $APP_DIR（版本 $SHORT_VERSION，构建 $BUILD_NUMBER）"
+echo "==> 组装 ${APP_DIR}（版本 ${SHORT_VERSION}，构建 ${BUILD_NUMBER}）"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"

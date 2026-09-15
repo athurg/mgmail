@@ -35,7 +35,7 @@ else
   ARCH_NOTE="仅 arm64（Apple Silicon）"
 fi
 
-echo "==> 组装 $APP_DIR（版本 $SHORT_VERSION，构建 $BUILD_NUMBER）"
+echo "==> 组装 ${APP_DIR}（版本 ${SHORT_VERSION}，构建 ${BUILD_NUMBER}）"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
@@ -85,6 +85,6 @@ json.dump({
 PYEOF
 
 echo ""
-echo "✅ 完成：$ZIP （$ARCH_NOTE）"
+echo "✅ 完成：$ZIP （${ARCH_NOTE}）"
 echo "   manifest：$DIST/manifest.json"
 echo "   分发到其它 Mac 后，见新机安装说明。"
