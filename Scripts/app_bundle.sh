@@ -1,14 +1,36 @@
 #!/bin/bash
-# 组装 Mgmail.app 时两个打包脚本共用的那几步：版本号怎么算、Info.plist 长什么样、图标从哪来。
-# 用法：在脚本里 `source Scripts/app_bundle.sh`，然后调下面的函数。
+# 组装 .app 时两个打包脚本共用的那几步：身份是哪一种、版本号怎么算、Info.plist 长什么样、图标从哪来。
+# 用法：在脚本里 `source Scripts/app_bundle.sh`，先 `set_flavor release|dev`，再调下面的函数。
 #
 # 抽出来是因为 Info.plist 曾经在两个脚本里各写一份，分发用的那份少了
 # UTExportedTypeDeclarations（标签拖拽用的私有 UTI）和图标——同一份 plist 只有一处
 # 才不会再漏。
 
-APP_NAME="Mgmail"
-BUNDLE_ID="com.mgmail.app"
 EXECUTABLE="MgmailApp"
+
+# 两种「身份」：正式包（分发、CI 出的）和开发包（本机 build_app.sh 出的）。
+# 名字、bundle id、图标、数据目录全都分开，否则两个包同时跑起来既认不出谁是谁，
+# 又共用同一份 UserDefaults、同一个 Application Support 目录，同步位点互相踩。
+# bundle id 不同还有一层意思：LaunchServices 把两个 id 相同的 .app 当成同一个应用，
+# `open dist/Mgmail.app` 会只把正在跑的 /Applications 那份切到前台，新二进制根本不加载。
+#
+# set_flavor release|dev
+set_flavor() {
+  FLAVOR="$1"
+  case "$FLAVOR" in
+    release)
+      APP_NAME="Mgmail"
+      BUNDLE_ID="com.mgmail.app"
+      ICON_BASENAME="AppIcon"
+      ;;
+    dev)
+      APP_NAME="Mgmail Dev"
+      BUNDLE_ID="com.mgmail.app.dev"
+      ICON_BASENAME="AppIconDev"
+      ;;
+    *) echo "未知 flavor: $FLAVOR（只认 release / dev）" >&2; exit 2 ;;
+  esac
+}
 
 # 版本号取自最近的 git tag（形如 v1.2.3），没有 tag 就退回 0.0.0。
 # 写死在脚本里的话，每次发版都得记得来改一次——而那件事一定会被忘掉。
@@ -42,9 +64,12 @@ write_info_plist() {
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
+    <string>$ICON_BASENAME</string>
     <key>CFBundleIconName</key>
-    <string>AppIcon</string>
+    <string>$ICON_BASENAME</string>
+    <!-- 应用靠这个键决定自己是正式包还是开发包（数据目录、能否自更新）；见 App/AppFlavor.swift -->
+    <key>MgmailFlavor</key>
+    <string>$FLAVOR</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -87,16 +112,16 @@ PLIST
 }
 
 # copy_app_icon <app 目录>
-# 图标缺失则从 SVG 现生成，再拷入 .app 的 Resources。
+# 按 flavor 选图标（开发包是右下角打了 DEV 角标的那版）；缺失则从 SVG 现生成，再拷入 .app 的 Resources。
 copy_app_icon() {
-  local app_dir="$1" icon_src="Resources/AppIcon.icns"
+  local app_dir="$1" icon_src="Resources/${ICON_BASENAME}.icns"
   if [[ ! -f "$icon_src" && -x "Scripts/make_icon.sh" ]]; then
     echo "==> 未找到 ${icon_src}，尝试从 SVG 生成"
-    Scripts/make_icon.sh || true
+    Scripts/make_icon.sh "$FLAVOR" || true
   fi
   if [[ -f "$icon_src" ]]; then
-    cp "$icon_src" "$app_dir/Contents/Resources/AppIcon.icns"
-    echo "==> 已嵌入图标 AppIcon.icns"
+    cp "$icon_src" "$app_dir/Contents/Resources/${ICON_BASENAME}.icns"
+    echo "==> 已嵌入图标 ${ICON_BASENAME}.icns"
   else
     echo "==> 跳过图标：$icon_src 不存在"
   fi

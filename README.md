@@ -8,12 +8,43 @@
 ## 构建与运行
 
 ```bash
-Scripts/build_app.sh          # release 编译并打包成 dist/Mgmail.app
+Scripts/build_app.sh          # release 编译并打包成开发包 dist/Mgmail\ Dev.app
 Scripts/build_app.sh run      # 打包后启动
 Scripts/build_app.sh debug run # debug 编译并启动
 ```
 
 也可直接 `swift build` / `swift run`；日后装了 Xcode 可 `open Package.swift`。
+
+### 开发包与正式包
+
+本机 `build_app.sh` 出的是**开发包**，CI / `Scripts/package_dist.sh` 出的是**正式包**。
+两种包是两个不同的应用，可以同时跑、一眼分得清：
+
+|            | 正式包                    | 开发包                        |
+|------------|---------------------------|-------------------------------|
+| 名字       | Mgmail                    | Mgmail Dev                    |
+| bundle id  | `com.mgmail.app`          | `com.mgmail.app.dev`          |
+| 图标       | 原图                      | 右下角橙色 DEV 角标           |
+| 数据目录   | `…/Application Support/Mgmail` | `…/Application Support/Mgmail Dev` |
+| 自动更新   | 有                        | 无                            |
+
+分开的理由：bundle id 相同时 LaunchServices 把两个 .app 当成同一个应用，`open dist/Mgmail.app`
+只会把 /Applications 里正在跑的那份切到前台，新二进制根本不加载；而两个进程共用一份
+UserDefaults 和一个数据目录，同步位点互相踩，谁也说不清池子里是什么。
+
+开发包**首次启动会从正式包克隆一份数据快照**（`App/DevSeed.swift`）：账号、令牌、邮件池、
+同步位点、各项设置全带上，打开就能测，不必重新添加账号、重新回溯同步。APFS 上用 `clonefile`
+整棵树克隆，瞬间完成、不额外占盘。之后两边各走各的，互不影响；重新打包也不动这份数据。
+
+想换一份新快照、或者要个干净环境：
+
+```bash
+Scripts/dev_reset.sh          # 清掉开发包数据，下次启动重新从正式包克隆
+Scripts/dev_reset.sh --empty  # 清掉，下次启动是空环境（只留 oauth_client.json）
+```
+
+应用靠 Info.plist 里的 `MgmailFlavor` 认自己是哪种包（`App/AppFlavor.swift`）；
+`swift run` 直接跑的裸可执行文件没有 bundle，也按开发包算。
 
 ## 首次配置 Gmail 访问（必需）
 
@@ -245,6 +276,7 @@ HTTPS 端点或 Pub/Sub pull 订阅，桌面应用两样都没有，用户得自
   核对包里的构建号；然后把正在运行的这份挪开、新包挪进来、旧包删掉，让一个 shell
   等本进程退出后 `open` 新包。下载完先问一次再重启——撰写窗口会跟着关，先存草稿。
 - `swift run` 直接跑的裸可执行文件没有 bundle，无从替换，这整套功能在那种跑法下关闭。
+  本机打包的开发包（`Mgmail Dev.app`）同样关闭：换成正式包就不是它自己了。
 - 调试整条链路不必真发 Release：环境变量 `MGMAIL_UPDATE_MANIFEST_URL` 指到本地起的
   HTTP 服务上即可（`python3 -m http.server` 放一份 `manifest.json` 和 `Mgmail.zip`，
   manifest 里的 `url` 改成本地地址）。
@@ -264,9 +296,11 @@ Sources/MgmailApp/
   Update/   自动更新（版本比较 / manifest / 检查与弹窗 / 下载校验替换重启 / 设置页）
   UI/       三栏界面、会话列表、正文渲染、撰写窗口、原文窗口、标签编辑、活动栏与活动窗口
 Scripts/
-  app_bundle.sh     两个打包脚本共用的：版本号、Info.plist、图标
-  build_app.sh      编译并打包 dist/Mgmail.app（本机开发用，Mgmail Dev 证书签名）
-  package_dist.sh   打分发包：通用二进制 + ad-hoc 签名 + Mgmail.zip + manifest.json（CI 跑的就是它）
+  app_bundle.sh     两个打包脚本共用的：包身份（正式 / 开发）、版本号、Info.plist、图标
+  build_app.sh      编译并打包开发包 dist/Mgmail Dev.app（本机开发用，Mgmail Dev 证书签名）
+  package_dist.sh   打正式包：通用二进制 + ad-hoc 签名 + Mgmail.zip + manifest.json（CI 跑的就是它）
+  make_icon.sh      从 SVG 生成 .icns；`dev` 出带角标的那份，`all` 两份都出
+  dev_reset.sh      清掉开发包的数据，下次启动重新从正式包克隆（`--empty` 则是空环境）
   check_mime.sh     报文拼装自检（见「自检」）
   check_mailbox.sh  邮箱归属自检（见「自检」）
   check_search.sh   本地搜索自检（见「自检」）
@@ -275,7 +309,7 @@ Scripts/
 
 ## 本地数据
 
-都在 `~/Library/Application Support/Mgmail/` 下：
+都在 `~/Library/Application Support/Mgmail/` 下（开发包是 `Mgmail Dev/`，两边互不相干）：
 
 ```
 oauth_client.json          Google OAuth 客户端配置（自己放进去的）

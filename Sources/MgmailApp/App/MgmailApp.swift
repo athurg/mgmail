@@ -172,7 +172,7 @@ struct RootView: View {
                 MessageDetailView()
             }
             // 标题挂在分栏视图自己身上：外面套了 VStack 之后，它不再是窗口的根视图
-            .navigationTitle("Mgmail")
+            .navigationTitle(AppFlavor.current.displayName)
             // 横贯整个窗口底部的网络活动栏（没有活动时不占位）
             ActivityStatusBar()
         }
