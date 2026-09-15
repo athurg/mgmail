@@ -175,7 +175,12 @@ struct SidebarView: View {
 
     private func accountHeader(_ account: Account) -> some View {
         HStack(spacing: 6) {
-            AccountAvatar(account: account, size: 16, reloadToken: appState.avatarReloadToken)
+            // 头像兼作该账号的刷新按钮：鼠标移上去变成刷新图标，点一下只刷这个账号。
+            // 放在行首而不是行尾，是因为可折叠分组头在悬停时会于右端冒出系统的「显示/隐藏」
+            // 按钮，把整行往左挤——摆在最右的按钮鼠标一靠近就挪走，点不着；行首不受影响。
+            AvatarRefreshButton(account: account, reloadToken: appState.avatarReloadToken) {
+                refresh(account.id)
+            }
             VStack(alignment: .leading, spacing: 0) {
                 Text(account.displayName)
                     .font(.caption)
@@ -198,10 +203,6 @@ struct SidebarView: View {
             }
             Spacer(minLength: 4)
             // 该账号有请求在飞时转圈；空闲时留着同样大小的空位，转圈来去时文字不会跟着挪。
-            //
-            // 这里**不放**刷新按钮：可折叠的分组头在鼠标悬停时会于右端冒出系统的「显示/隐藏」
-            // 按钮，把整行往左挤——摆在最右的按钮鼠标一靠近就挪走，点不着。单个账号要刷新
-            // 走右键菜单或「邮箱 → 获取新邮件」，全部刷新用工具栏那颗。
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.6)
@@ -242,6 +243,41 @@ struct SidebarView: View {
                 LabelExpansionStore.save(expandedLabels)
             }
         )
+    }
+}
+
+/// 账号头像，鼠标悬停时变成刷新按钮，点击刷新该账号。
+///
+/// 平时就是普通头像，不占额外位置；悬停才换成刷新图标，所以不会让账号行显得像一排按钮。
+private struct AvatarRefreshButton: View {
+    let account: Account
+    let reloadToken: Int
+    let action: () -> Void
+    @State private var hovering = false
+
+    private let size: CGFloat = 16
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                AccountAvatar(account: account, size: size, reloadToken: reloadToken)
+                    .opacity(hovering ? 0 : 1)
+                if hovering {
+                    Circle()
+                        .fill(Color.accentColor)
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: size * 0.6, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+            }
+            .frame(width: size, height: size)
+            // 头像只有 16pt，点击区域放宽一圈，不用瞄得那么准
+            .contentShape(Circle().inset(by: -3))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
+        .help("获取新邮件")
     }
 }
 
