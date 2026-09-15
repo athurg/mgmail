@@ -112,13 +112,21 @@ struct SidebarView: View {
         ForEach(appState.activeAccounts) { account in
             let tree = LabelTree.build(labelStore.userLabels(for: account.id))
             let categories = labelStore.categories(for: account.id)
+            let collapsed = collapsedAccounts.contains(account.id)
             // 可折叠：点账号名（分组头）隐藏/展开该账号的标签列表。默认展开。
+            //
+            // 整个分组（账号头 + 它的邮箱和标签）垫在同一块圆角卡片上：账号头是卡片上沿、
+            // 中间每一行是平直的一段、当前可见的最后一行作下沿。List 的行底是一行一块，
+            // 只有这样拼才能让它们连成一整张卡，账号和它的邮箱看起来才是一个整体。
+            // 下沿落在哪一行取决于标签树和「分类」组当下折叠到什么程度，所以要一层层往下传。
+            let categoriesOpen = expandedLabels.contains("cat:\(account.id)")
             Section(isExpanded: accountBinding(account.id)) {
                 // 该账号自己的固定邮箱：顶部是聚合视图，这里才能单看一个账号
                 ForEach(StandardMailbox.all) { box in
                     Label(box.name, systemImage: box.systemImage)
                         .tag(MailboxSelection(accountID: account.id, labelID: box.id,
                                               labelName: "\(account.displayName) · \(box.name)"))
+                        .cardBottom(tree.isEmpty && categories.isEmpty && box.id == StandardMailbox.all.last?.id)
                 }
                 // 收件箱分类（主要/社交/推广…）：条目多且不常用，收进一个默认折叠的组
                 if !categories.isEmpty {
@@ -127,17 +135,22 @@ struct SidebarView: View {
                             Label(category.name, systemImage: category.systemImage)
                                 .tag(MailboxSelection(accountID: account.id, labelID: category.id,
                                                       labelName: "\(account.displayName) · \(category.name)"))
+                                .cardBottom(tree.isEmpty && category.id == categories.last?.id)
                         }
                     } label: {
                         Label("分类", systemImage: "square.grid.2x2")
+                            .cardBottom(tree.isEmpty && !categoriesOpen)
                     }
                 }
                 ForEach(tree) { node in
-                    LabelNodeView(node: node, accountID: account.id, expanded: $expandedLabels)
+                    LabelNodeView(node: node, accountID: account.id, expanded: $expandedLabels,
+                                  closesCard: node.id == tree.last?.id)
                 }
             } header: {
                 accountHeader(account)
+                    .listRowBackground(AccountCard(piece: collapsed ? .whole : .top))
             }
+            .listRowBackground(AccountCard(piece: .middle))
         }
     }
 
@@ -221,18 +234,10 @@ struct SidebarView: View {
                 .opacity(activity.busyAccounts.contains(account.id) ? 1 : 0)
         }
         .animation(.easeInOut(duration: 0.15), value: activity.busyAccounts.contains(account.id))
-        // 账号信息垫一块淡底色，和下面缩进一致的邮箱行区分开——不然三行小字和一排邮箱
-        // 挤在一起，账号头看着像是列表的一部分。左边挪 6pt，让头像圆心对上下面
-        // 邮箱行图标的中线；底色再往左探一点，左缘和选中行的高亮条齐。
-        .padding(.vertical, 5)
+        // 左边挪 6pt，让头像圆心对上下面邮箱行图标的中线；底色由分组卡片（AccountCard）统一画。
+        .padding(.vertical, 6)
         .padding(.leading, 6)
         .padding(.trailing, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(.quaternary.opacity(0.6))
-                .padding(.leading, -7)
-        )
-        .padding(.top, 6)
         .help(account.email)
         .contextMenu {
             Button("获取新邮件") { refresh(account.id) }
@@ -273,6 +278,42 @@ struct SidebarView: View {
                 LabelExpansionStore.save(expandedLabels)
             }
         )
+    }
+}
+
+/// 账号分组卡片的一段。整张卡由多行的行底拼成：账号头是 `.top`，中间各行 `.middle`，
+/// 末尾空白行 `.bottom`；分组折叠起来只剩账号头时用 `.whole`。
+private struct AccountCard: View {
+    enum Piece { case top, middle, bottom, whole }
+    let piece: Piece
+
+    private static let radius: CGFloat = 8
+    /// 卡片左右各让出一点，别贴着侧栏边缘；和系统选中高亮的内缩差不多。
+    private static let inset: CGFloat = 6
+
+    var body: some View {
+        let r = Self.radius
+        let top: CGFloat = (piece == .top || piece == .whole) ? r : 0
+        let bottom: CGFloat = (piece == .bottom || piece == .whole) ? r : 0
+        UnevenRoundedRectangle(topLeadingRadius: top, bottomLeadingRadius: bottom,
+                               bottomTrailingRadius: bottom, topTrailingRadius: top,
+                               style: .continuous)
+            .fill(.quaternary)
+            .padding(.horizontal, Self.inset)
+            // 卡与卡之间留出明显的空隙，上沿那一段往下让
+            .padding(.top, (piece == .top || piece == .whole) ? 10 : 0)
+    }
+}
+
+private extension View {
+    /// 标记这一行是账号卡片的下沿。传 false 不改行底，沿用分组统一的中段。
+    @ViewBuilder
+    func cardBottom(_ isBottom: Bool) -> some View {
+        if isBottom {
+            listRowBackground(AccountCard(piece: .bottom))
+        } else {
+            self
+        }
     }
 }
 
@@ -318,18 +359,22 @@ private struct LabelNodeView: View {
     let node: LabelNode
     let accountID: String
     @Binding var expanded: Set<String>
+    /// 这个节点是不是账号卡片里最末的一支：是的话，它当前可见的最后一行要画成卡片下沿。
+    var closesCard = false
     @EnvironmentObject private var appState: AppState
 
     var body: some View {
         if node.children.isEmpty {
-            interactiveRow
+            interactiveRow.cardBottom(closesCard)
         } else {
             DisclosureGroup(isExpanded: expandBinding) {
                 ForEach(node.children) { child in
-                    LabelNodeView(node: child, accountID: accountID, expanded: $expanded)
+                    LabelNodeView(node: child, accountID: accountID, expanded: $expanded,
+                                  closesCard: closesCard && child.id == node.children.last?.id)
                 }
             } label: {
-                interactiveRow
+                // 折叠着时自己就是最后一行；展开了下沿归最后一个子节点
+                interactiveRow.cardBottom(closesCard && !expanded.contains(node.id))
             }
         }
     }
