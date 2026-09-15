@@ -32,8 +32,17 @@ Scripts/build_app.sh debug run # debug 编译并启动
 只会把 /Applications 里正在跑的那份切到前台，新二进制根本不加载；而两个进程共用一份
 UserDefaults 和一个数据目录，同步位点互相踩，谁也说不清池子里是什么。
 
-开发包首次启动会从正式包目录抄一份 `oauth_client.json`（就这一个文件），账号要重新添加、
-邮件重新同步——一次浏览器授权的事，换来的是一个干净的开发环境。
+开发包**首次启动会从正式包克隆一份数据快照**（`App/DevSeed.swift`）：账号、令牌、邮件池、
+同步位点、各项设置全带上，打开就能测，不必重新添加账号、重新回溯同步。APFS 上用 `clonefile`
+整棵树克隆，瞬间完成、不额外占盘。之后两边各走各的，互不影响；重新打包也不动这份数据。
+
+想换一份新快照、或者要个干净环境：
+
+```bash
+Scripts/dev_reset.sh          # 清掉开发包数据，下次启动重新从正式包克隆
+Scripts/dev_reset.sh --empty  # 清掉，下次启动是空环境（只留 oauth_client.json）
+```
+
 应用靠 Info.plist 里的 `MgmailFlavor` 认自己是哪种包（`App/AppFlavor.swift`）；
 `swift run` 直接跑的裸可执行文件没有 bundle，也按开发包算。
 
@@ -291,6 +300,7 @@ Scripts/
   build_app.sh      编译并打包开发包 dist/Mgmail Dev.app（本机开发用，Mgmail Dev 证书签名）
   package_dist.sh   打正式包：通用二进制 + ad-hoc 签名 + Mgmail.zip + manifest.json（CI 跑的就是它）
   make_icon.sh      从 SVG 生成 .icns；`dev` 出带角标的那份，`all` 两份都出
+  dev_reset.sh      清掉开发包的数据，下次启动重新从正式包克隆（`--empty` 则是空环境）
   check_mime.sh     报文拼装自检（见「自检」）
   check_mailbox.sh  邮箱归属自检（见「自检」）
   check_search.sh   本地搜索自检（见「自检」）
