@@ -279,7 +279,9 @@ HTTPS 端点或 Pub/Sub pull 订阅，桌面应用两样都没有，用户得自
   本机打包的开发包（`Mgmail Dev.app`）同样关闭：换成正式包就不是它自己了。
 - 调试整条链路不必真发 Release：环境变量 `MGMAIL_UPDATE_MANIFEST_URL` 指到本地起的
   HTTP 服务上即可（`python3 -m http.server` 放一份 `manifest.json` 和 `Mgmail.zip`，
-  manifest 里的 `url` 改成本地地址）。
+  manifest 里的 `url` 改成本地地址）。带着这个变量启动时开发包也会开启检查更新。
+- 弹窗（有新版 / 已是最新 / 下载好了）挂在当前窗口上当 sheet，窗口在哪块屏它就在哪块屏；
+  一个窗口都没开时才独立弹出，放到鼠标所在的屏幕上。
 
 ## 目录结构
 
