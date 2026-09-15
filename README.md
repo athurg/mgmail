@@ -38,6 +38,7 @@ Scripts/build_app.sh debug run # debug 编译并启动
 - 本地搜索（⌘F）：在已同步的邮件里按发件人 / 主题 / 摘要搜，支持 `from:` `is:unread` 这类限定词
 - 查看原始邮件：右键任意一封 → 拆好的头字段 + 一字不改的报文原文，可拷贝、存成 `.eml`
 - 新邮件通知：系统横幅 + Dock 未读角标，可按账号和邮件类别筛
+- 自动更新：从 GitHub Release 比对版本，一键下载、替换、重启；正式版 / 开发版两个渠道
 
 ## 写邮件
 
@@ -216,6 +217,38 @@ HTTPS 端点或 Pub/Sub pull 订阅，桌面应用两样都没有，用户得自
 - **磁盘日志**：`~/Library/Application Support/Mgmail/Logs/activity-YYYY-MM-DD.jsonl`，
   一行一条 JSON，保留 7 天。内存里只留最近 1000 条，更早的翻文件。
 
+## 发布与自动更新
+
+发布走 GitHub Actions（`.github/workflows/release.yml`），两条线：
+
+- **推 `v*` tag** → 正式版。Release 名字就是 tag，说明是上一个 tag 到这一个之间的提交。
+- **合并进 main** → 开发版。滚动覆盖的预发布 `main-latest`，每次合并整个删掉重建。
+
+两条线跑的都是 `Scripts/package_dist.sh`：通用二进制（arm64 + x86_64）、ad-hoc 签名、
+`Mgmail.zip`，外加一份 `manifest.json`（版本号、构建号、提交、SHA-256、下载地址、说明）。
+版本号取最近的 tag，构建号是提交数——main 上每合并一个 PR 就加一，所以没打 tag 的
+开发版之间也分得出先后。
+
+> 构建必须在 macOS 上（`swift build` 出 Mach-O、`lipo`、`codesign`），所以用的是 GitHub
+> 托管的 macOS 机，公开仓库免费；不是别的仓库惯用的自托管 Linux runner。
+
+应用那边（`Update/`）读的是 manifest，不是 Releases API：固定地址一个 GET 就够，
+不受匿名调用每小时 60 次的限额，校验和也顺带回来了。
+
+- **什么时候查**：定时同步每一轮顺带问一次，按小时节流；菜单「Mgmail → 检查更新…」和
+  设置页的按钮不节流，查完直接说结果。
+- **渠道**（设置 → 更新）：**正式版**只跟 tag（`releases/latest/download/manifest.json`，
+  GitHub 会跳过预发布）；**开发版**跟 `main-latest`。
+- **发现新版**：弹窗给出版本与说明，「下载并安装」「稍后」「跳过此版本」。稍后的这次启动
+  不再提；跳过的记在磁盘上，定时检查以后不再提这个构建号，手动检查照样看得到。
+- **下载与安装**：边下边算 SHA-256，对不上 manifest 就作废；`ditto` 解包、去隔离属性、
+  核对包里的构建号；然后把正在运行的这份挪开、新包挪进来、旧包删掉，让一个 shell
+  等本进程退出后 `open` 新包。下载完先问一次再重启——撰写窗口会跟着关，先存草稿。
+- `swift run` 直接跑的裸可执行文件没有 bundle，无从替换，这整套功能在那种跑法下关闭。
+- 调试整条链路不必真发 Release：环境变量 `MGMAIL_UPDATE_MANIFEST_URL` 指到本地起的
+  HTTP 服务上即可（`python3 -m http.server` 放一份 `manifest.json` 和 `Mgmail.zip`，
+  manifest 里的 `url` 改成本地地址）。
+
 ## 目录结构
 
 ```
@@ -228,9 +261,12 @@ Sources/MgmailApp/
   Accounts/ 账户模型与持久化
   Activity/ 网络活动日志（记录中枢 / 描述推断 / 磁盘日志）
   Notify/   新邮件通知（该不该弹 / 合并投递 / 授权状态 / 点击落点 / 设置页）
+  Update/   自动更新（版本比较 / manifest / 检查与弹窗 / 下载校验替换重启 / 设置页）
   UI/       三栏界面、会话列表、正文渲染、撰写窗口、原文窗口、标签编辑、活动栏与活动窗口
 Scripts/
-  build_app.sh      编译并打包 dist/Mgmail.app（版本号取自最近的 git tag）
+  app_bundle.sh     两个打包脚本共用的：版本号、Info.plist、图标
+  build_app.sh      编译并打包 dist/Mgmail.app（本机开发用，Mgmail Dev 证书签名）
+  package_dist.sh   打分发包：通用二进制 + ad-hoc 签名 + Mgmail.zip + manifest.json（CI 跑的就是它）
   check_mime.sh     报文拼装自检（见「自检」）
   check_mailbox.sh  邮箱归属自检（见「自检」）
   check_search.sh   本地搜索自检（见「自检」）
@@ -253,6 +289,7 @@ Cache/<账号>/
   message/  单封正文
   inline/   正文里的内联图片
 Logs/                      网络活动日志，保留 7 天
+updates/                   下载中的更新包，装完或下次启动就清掉
 ```
 
 账号目录名是「邮箱去掉符号 + 地址摘要」，缀摘要是为了让 `a.b@x.com` 和
