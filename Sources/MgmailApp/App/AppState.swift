@@ -88,6 +88,11 @@ final class AppState: ObservableObject {
     /// 头像缓存更新计数（下载完成后自增，驱动头像视图刷新）。
     @Published var avatarReloadToken = 0
 
+    /// 边栏是否收起（⌃⌘S）。三栏是自己排的，开合状态也自己记。
+    @Published var sidebarHidden = UserDefaults.standard.bool(forKey: "layout.sidebarHidden") {
+        didSet { UserDefaults.standard.set(sidebarHidden, forKey: "layout.sidebarHidden") }
+    }
+
     /// 「编辑 → 搜索邮件」（⌘F）发来的请求，由中栏把光标放进搜索框。
     /// 菜单命令够不着视图里的焦点状态，只能这样传一程。
     @Published var searchFocusRequest = 0

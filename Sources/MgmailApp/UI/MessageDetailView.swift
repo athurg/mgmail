@@ -23,12 +23,17 @@ struct MessageDetailView: View {
         // 加在它上面的 .animation 会被分发给每个分支各自持有，分支之间切换时
         // 拿不到动画，卡片的退场转场根本不会播。
         ZStack {
-            // 桌布铺满整栏；单选正文才裁进玻璃面板，多选的叠加卡片要从列表飞过来，不能被面板裁掉
-            WindowBackdrop().ignoresSafeArea()
+            Color.clear
             if !isMultiSelection {
-                singleContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .glassPanel()
+                // 没选邮件时只在桌布上写一句提示，不摆空面板；选了才裁进玻璃面板。
+                // 多选的叠加卡片要从列表飞过来，也不能被面板裁掉，所以面板只包单选正文。
+                if appState.selectedThreads.isEmpty {
+                    singleContent
+                } else {
+                    singleContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .glassPanel()
+                }
             }
             if stackVisible {
                 StackedSelectionView(

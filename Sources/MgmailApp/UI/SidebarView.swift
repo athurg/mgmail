@@ -26,10 +26,9 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             if !appState.accounts.isEmpty {
-                // 标题栏藏了，三个圆点直接浮在这一栏的左上角，分组标签得从它们下面开始排。
-                // 边栏那一栏在没有任何工具栏项时系统自己就会往下让一段，这里只再补一点
+                // 标题栏藏了，三个圆点直接浮在这一栏的左上角，分组标签得从它们下面开始排
                 ProfileSwitcher()
-                    .padding(.top, 4)
+                    .padding(.top, 30)
             }
             ScrollView {
                 if appState.accounts.isEmpty {
@@ -47,12 +46,6 @@ struct SidebarView: View {
                 }
             }
         }
-        // 顶上那段安全区是藏掉的标题栏留下的，直接顶上去，三个圆点的位置由上面的 padding 让
-        .ignoresSafeArea(edges: .top)
-        // 自己铺底色：系统侧栏材质在窗口失焦时会退成平灰，玻璃卡片就看不见了（见 WindowBackdrop）
-        .background(WindowBackdrop().ignoresSafeArea())
-        // 工具栏藏了，那颗「显示/隐藏边栏」孤零零浮在右上角一块玻璃里，摘掉；边栏开合走「显示」菜单（⌃⌘S）
-        .toolbar(removing: .sidebarToggle)
         .sheet(item: $appState.labelEditTarget) { target in
             LabelEditSheet(target: target)
                 .environmentObject(labelStore)

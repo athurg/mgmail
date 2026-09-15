@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// 为什么要自己铺底色：系统的侧栏材质在窗口失焦时会退成一块平灰，玻璃卡片放上去
 /// 几乎看不见了；自己铺一层渐变，激活与否都是同一张桌布，卡片始终有东西可「透」。
-/// 渐变只沿竖直方向：三栏各铺各的，横向同色才能在栏与栏之间接得上、看着像一整张。
+/// 整窗只铺一张（在 RootView），三栏都浮在它上面。
 struct WindowBackdrop: NSViewRepresentable {
     @Environment(\.colorScheme) private var scheme
 
@@ -80,7 +80,7 @@ extension View {
         modifier(GlassCard(radius: radius))
     }
 
-    /// 整栏一张玻璃面板：内容裁成圆角、垫玻璃、四周留出桌布，底下铺渐变底色。
+    /// 整栏一张玻璃面板：内容裁成圆角、垫玻璃、四周留出桌布。
     /// 中栏的邮件列表、右栏的正文都用它，和侧栏的卡片是同一套材质、同一个圆角。
     func glassPanel(inset: CGFloat = 10) -> some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -88,8 +88,5 @@ extension View {
             .clipShape(shape)
             .glassCard()
             .padding(inset)
-            // 标题栏藏了以后顶上那段安全区是空的，面板一路顶到窗口边（只留 inset），别空一截
-            .ignoresSafeArea(edges: .top)
-            .background(WindowBackdrop().ignoresSafeArea())
     }
 }

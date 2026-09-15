@@ -94,7 +94,6 @@ struct ThreadListView: View {
         }
         // 整栏一张玻璃面板，和侧栏的卡片、右栏的正文是同一套皮
         .glassPanel()
-        .navigationTitle(appState.selection?.labelName ?? "收件箱")
         // 选择/显示方式/过滤器变化：纯本地重算，不联网
         .onChange(of: viewKey, initial: true) { _, _ in
             // 协调器的引用在这里就绪，不依赖列表有没有内容（空邮箱时 list 不会被求值）
@@ -215,6 +214,8 @@ struct ThreadListView: View {
             }
             .buttonStyle(.borderless)
             .padding(.top, 4)
+            // 边栏收起时这一栏顶到窗口最左，三个圆点会压在面板头上，标题往右让开它们
+            .padding(.leading, appState.sidebarHidden ? 62 : 0)
             searchField
         }
         .padding(.horizontal, 12)
