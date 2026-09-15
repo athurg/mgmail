@@ -17,6 +17,8 @@ struct SidebarView: View {
     @State private var collapsedAccounts: Set<String> = LabelExpansionStore.loadCollapsed()
     /// 待确认移除的账号。移除会删掉登录凭据和整份本地缓存，不该点一下就执行。
     @State private var pendingRemoval: Account?
+    /// 各账号行右侧文字块的实际高度，头像按它撑满整行（按账号 id 记，行数因备注/回溯日期而异）。
+    @State private var headerTextHeights: [String: CGFloat] = [:]
 
     var body: some View {
         List(selection: Binding(
@@ -178,7 +180,12 @@ struct SidebarView: View {
             // 头像兼作该账号的刷新按钮：鼠标移上去变成刷新图标，点一下只刷这个账号。
             // 放在行首而不是行尾，是因为可折叠分组头在悬停时会于右端冒出系统的「显示/隐藏」
             // 按钮，把整行往左挤——摆在最右的按钮鼠标一靠近就挪走，点不着；行首不受影响。
-            AvatarRefreshButton(account: account, reloadToken: appState.avatarReloadToken) {
+            //
+            // 尺寸跟着右侧文字块走：有备注、有回溯日期的账号是三行，头像就撑到三行高；
+            // 只有一行名字的账号头像也随之缩小，不会把行高硬拉大。
+            AvatarRefreshButton(account: account,
+                                size: headerTextHeights[account.id] ?? AvatarRefreshButton.minSize,
+                                reloadToken: appState.avatarReloadToken) {
                 refresh(account.id)
             }
             VStack(alignment: .leading, spacing: 0) {
@@ -200,6 +207,9 @@ struct SidebarView: View {
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                headerTextHeights[account.id] = max(AvatarRefreshButton.minSize, height.rounded())
             }
             Spacer(minLength: 4)
             // 该账号有请求在飞时转圈；空闲时留着同样大小的空位，转圈来去时文字不会跟着挪。
@@ -250,12 +260,14 @@ struct SidebarView: View {
 ///
 /// 平时就是普通头像，不占额外位置；悬停才换成刷新图标，所以不会让账号行显得像一排按钮。
 private struct AvatarRefreshButton: View {
+    /// 文字块再矮头像也不小于这个尺寸，和别处的 16pt 小头像持平。
+    static let minSize: CGFloat = 16
+
     let account: Account
+    let size: CGFloat
     let reloadToken: Int
     let action: () -> Void
     @State private var hovering = false
-
-    private let size: CGFloat = 16
 
     var body: some View {
         Button(action: action) {
@@ -266,12 +278,12 @@ private struct AvatarRefreshButton: View {
                     Circle()
                         .fill(Color.accentColor)
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: size * 0.6, weight: .bold))
+                        .font(.system(size: size * 0.5, weight: .bold))
                         .foregroundStyle(.white)
                 }
             }
             .frame(width: size, height: size)
-            // 头像只有 16pt，点击区域放宽一圈，不用瞄得那么准
+            // 点击区域比头像放宽一圈，不用瞄得那么准
             .contentShape(Circle().inset(by: -3))
         }
         .buttonStyle(.plain)
