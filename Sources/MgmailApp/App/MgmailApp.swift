@@ -27,6 +27,7 @@ struct MgmailApp: App {
         .windowStyle(.titleBar)
         .commands {
             SidebarCommands()
+            CheckForUpdatesCommand()
             NewMailCommand(appState: appState)
             SearchMailCommand(appState: appState)
             // 账号已在「设置」里统一管理，不再单独开菜单。
@@ -101,6 +102,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// 「Mgmail → 检查更新…」。放在「关于」下面，和别的 Mac 应用一个位置。
+struct CheckForUpdatesCommand: Commands {
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("检查更新…") { UpdateChecker.shared.checkFromMenu() }
+                .disabled(!UpdateChecker.isAvailable)
+        }
+    }
+}
+
 /// 「文件 → 新邮件」（⌘N）。
 ///
 /// 发件人取当前侧栏选中的那个账号，没选中就用第一个；一个账号都没有时按钮置灰
@@ -145,6 +156,7 @@ struct RootView: View {
     @EnvironmentObject private var mailStore: MailStore
     @EnvironmentObject private var sync: SyncScheduler
     @ObservedObject private var router = NotificationRouter.shared
+    @Environment(\.openSettings) private var openSettings
     /// 行 id 的语义随它变（会话模式下是 threadId，否则是 messageId），跳转要按它来。
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
 
@@ -192,9 +204,14 @@ struct RootView: View {
             // 通知里的快捷操作要改本地池子。它可能在主窗口关着的时候触发，
             // 但池子活在 App 上，注入一次就一直有效。
             NotificationActionHandler.shared.store = mailStore
-            sync.start(accounts: { appState.accounts.map(\.id) }) { account in
+            // 更新弹窗里点了「下载并安装」要把设置窗口开到「更新」页，开窗口的钥匙只有视图环境里有
+            UpdateChecker.shared.openSettings = { openSettings() }
+            sync.start(accounts: { appState.accounts.map(\.id) }, perform: { account in
                 await MailRefresh.account(account, labels: labelStore, mail: mailStore, colors: false)
-            }
+            }, afterEach: {
+                // 每轮定时同步顺带问一次 GitHub 有没有新版（检查器自己按小时节流）
+                await UpdateChecker.shared.checkIfDue()
+            })
             // 没有账号就没有邮件，这时候索要通知权限只是打扰
             if !appState.accounts.isEmpty {
                 await NotificationPermission.shared.requestIfNeeded()

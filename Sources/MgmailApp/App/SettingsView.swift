@@ -29,14 +29,20 @@ enum SettingsKey {
     static let notifyDockBadge = "notify.dockBadge"
     /// 被静音的账号（邮箱地址数组）。
     static let notifyMutedAccounts = "notify.mutedAccounts"
+    /// 定时同步时顺带检查更新。
+    static let updateAutoCheck = "update.autoCheck"
+    /// 更新渠道：`stable` 只跟 tag，`dev` 跟 main 的每次合并。
+    static let updateChannel = "update.channel"
+    /// 用户点过「跳过此版本」的那个构建号，定时检查不再提它。
+    static let updateSkippedBuild = "update.skippedBuild"
 }
 
 /// 设置窗口的标签页。
 enum SettingsTab: String {
-    case accounts, profiles, display, sync, notifications, privacy
+    case accounts, profiles, display, sync, notifications, privacy, updates
 }
 
-/// 设置窗口（⌘,）：账号、分组、显示、隐私四页。
+/// 设置窗口（⌘,）：账号、分组、显示、同步、通知、隐私、更新。
 struct SettingsView: View {
     @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = false
     @AppStorage(SettingsKey.conversationView) private var conversationView = false
@@ -89,6 +95,10 @@ struct SettingsView: View {
             .formStyle(.grouped)
             .tabItem { Label("隐私", systemImage: "hand.raised") }
             .tag(SettingsTab.privacy.rawValue)
+
+            UpdateSettingsPane()
+                .tabItem { Label("更新", systemImage: "arrow.down.circle") }
+                .tag(SettingsTab.updates.rawValue)
         }
         .frame(width: 500, height: 420)
     }

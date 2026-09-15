@@ -25,14 +25,18 @@ final class SyncScheduler: ObservableObject {
     private var perform: (@MainActor (String) async -> Void)?
     /// 要同步哪些账号，每次触发时现取（账号增删后自动跟上）。
     private var accounts: (@MainActor () -> [String])?
+    /// 每一轮同步之后顺带做的事（目前是检查更新）。不看账号有没有，也不受同步互斥的管。
+    private var afterEach: (@MainActor () async -> Void)?
 
     /// 轮询间隔。
     static let interval: Duration = .seconds(60)
 
     func start(accounts: @escaping @MainActor () -> [String],
-               perform: @escaping @MainActor (String) async -> Void) {
+               perform: @escaping @MainActor (String) async -> Void,
+               afterEach: (@MainActor () async -> Void)? = nil) {
         self.accounts = accounts
         self.perform = perform
+        self.afterEach = afterEach
         startTimer()
         observeWake()
     }
@@ -52,7 +56,7 @@ final class SyncScheduler: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.interval)
                 if Task.isCancelled { return }
-                await self?.syncNow()
+                await self?.tick()
             }
         }
     }
@@ -69,9 +73,15 @@ final class SyncScheduler: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.startTimer()
-                await self.syncNow()
+                await self.tick()
             }
         }
+    }
+
+    /// 定时器和睡眠唤醒走的一轮：同步，然后做顺带的事。
+    private func tick() async {
+        await syncNow()
+        await afterEach?()
     }
 
     /// 立即同步一次。只有定时器和睡眠唤醒会调它——手动刷新走的是侧栏账号行上的按钮，
