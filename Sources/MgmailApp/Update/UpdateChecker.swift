@@ -119,13 +119,33 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    /// 去 GitHub 拿 manifest，和自己比一比。
+    /// 去 GitHub 拿 manifest，和自己比一比。渠道要看几份就拿几份，版本最高的那份算数；
+    /// 全都拿不到才算失败，只要有一份到手就按那份说。
     func check() async {
         guard let current = AppVersion.current, !busy else { return }
         busy = true
         defer { busy = false }
         phase = .checking
-        let url = Self.manifestOverride ?? channel.manifestURL
+        let urls = Self.manifestOverride.map { [$0] } ?? channel.manifestURLs
+        var newest: UpdateManifest?
+        var firstFailure: String?
+        for url in urls {
+            do {
+                let manifest = try await fetchManifest(url)
+                if newest.map({ manifest.appVersion > $0.appVersion }) ?? true { newest = manifest }
+            } catch {
+                firstFailure = firstFailure ?? ActivityLog.message(for: error)
+            }
+        }
+        lastCheckedAt = Date()
+        if let newest {
+            phase = newest.appVersion > current ? .available(newest) : .upToDate
+        } else {
+            phase = .failed(firstFailure ?? "")
+        }
+    }
+
+    private func fetchManifest(_ url: URL) async throws -> UpdateManifest {
         let token = ActivityLog.shared.begin(.init(kind: .other, title: "检查更新（\(channel.title)）"),
                                              account: nil, method: "GET", url: url)
         do {
@@ -139,13 +159,10 @@ final class UpdateChecker: ObservableObject {
             }
             let manifest = try JSONDecoder().decode(UpdateManifest.self, from: data)
             ActivityLog.shared.finish(token, statusCode: http.statusCode, bytes: data.count)
-            lastCheckedAt = Date()
-            phase = manifest.appVersion > current ? .available(manifest) : .upToDate
+            return manifest
         } catch {
-            let text = ActivityLog.message(for: error)
-            ActivityLog.shared.finish(token, statusCode: nil, error: text)
-            lastCheckedAt = Date()
-            phase = .failed(text)
+            ActivityLog.shared.finish(token, statusCode: nil, error: ActivityLog.message(for: error))
+            throw error
         }
     }
 

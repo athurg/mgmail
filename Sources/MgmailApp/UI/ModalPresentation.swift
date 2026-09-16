@@ -10,10 +10,13 @@ import AppKit
 @MainActor
 enum ModalHost {
     /// 弹窗该挂到哪扇窗上：先拿正在用的那扇，其次任何一扇开着的普通窗口。
-    static var window: NSWindow? {
+    static var window: NSWindow? { window(excluding: nil) }
+
+    /// 同上，但跳过指定的那扇——一扇窗要找「除了我之外正在用的那扇」时用。
+    static func window(excluding excluded: NSWindow?) -> NSWindow? {
         let candidates = [NSApp.keyWindow, NSApp.mainWindow] + NSApp.windows
         return candidates.lazy.compactMap { $0 }
-            .first { $0.isVisible && $0.canBecomeMain && $0.attachedSheet == nil }
+            .first { $0 !== excluded && $0.isVisible && $0.canBecomeMain && $0.attachedSheet == nil }
     }
 
     /// 没窗口可挂时独立弹窗的落点：拉到前台，放到鼠标所在的屏幕正中并强制排上屏。
