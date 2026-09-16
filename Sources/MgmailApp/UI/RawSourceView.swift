@@ -186,11 +186,13 @@ struct RawSourceView: View {
         panel.nameFieldStringValue = filename
         panel.allowedContentTypes = [.init(filenameExtension: "eml") ?? .data]
         panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try source.data.write(to: url)
-        } catch {
-            loadError = error.localizedDescription
+        Task {
+            guard await panel.present() == .OK, let url = panel.url else { return }
+            do {
+                try source.data.write(to: url)
+            } catch {
+                loadError = error.localizedDescription
+            }
         }
     }
 

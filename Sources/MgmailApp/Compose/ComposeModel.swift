@@ -73,12 +73,14 @@ final class ComposeModel: ObservableObject {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.prompt = "添加"
-        guard panel.runModal() == .OK else { return }
-        for url in panel.urls {
-            do {
-                mail.attachments.append(try OutgoingAttachment(url: url))
-            } catch {
-                errorText = "读不了「\(url.lastPathComponent)」：\(error.localizedDescription)"
+        Task {
+            guard await panel.present() == .OK else { return }
+            for url in panel.urls {
+                do {
+                    mail.attachments.append(try OutgoingAttachment(url: url))
+                } catch {
+                    errorText = "读不了「\(url.lastPathComponent)」：\(error.localizedDescription)"
+                }
             }
         }
     }

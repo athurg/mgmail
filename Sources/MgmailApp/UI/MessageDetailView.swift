@@ -335,11 +335,12 @@ struct AttachmentChip: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = attachment.filename
         panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-
-        isDownloading = true
-        errorText = nil
         Task {
+            // 挂在当前窗口上当 sheet，不独立弹：窗口在副屏上时独立弹的面板会落到另一块屏，
+            // 看起来就是点了没反应
+            guard await panel.present() == .OK, let url = panel.url else { return }
+            isDownloading = true
+            errorText = nil
             do {
                 let data = try await GmailAPI(account: account)
                     .getAttachment(messageID: attachment.messageID, attachmentId: attachment.attachmentId)
