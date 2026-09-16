@@ -244,40 +244,12 @@ final class UpdateChecker: ObservableObject {
         }
     }
 
-    /// 弹出 `alert` 并等用户点按钮。
-    ///
-    /// 挂在当前窗口上当 sheet，而不是 `runModal()` 独立弹一个：独立弹的那种落在
-    /// 带菜单栏的那块屏幕上（有时还没排上屏），主窗口在另一台显示器上时用户根本
-    /// 看不见它，只见整个应用变灰、点哪儿都没反应；它也不进调度中心，翻遍所有窗口
-    /// 都找不着。sheet 贴在窗口上，窗口在哪它就在哪。一个窗口都没开的时候（关掉最后一个窗口进程不退出）才退回
-    /// 独立弹窗，这时把应用拉到前台、弹窗放到鼠标所在的那块屏幕上，至少能被看见。
+    /// 弹出 `alert` 并等用户点按钮。挂在当前窗口上当 sheet，出场规则见 `ModalHost`。
     @discardableResult
     private func present(_ alert: NSAlert) async -> NSApplication.ModalResponse {
         prompting = true
         defer { prompting = false }
-        if let host = Self.hostWindow {
-            host.makeKeyAndOrderFront(nil)
-            return await withCheckedContinuation { continuation in
-                alert.beginSheetModal(for: host) { continuation.resume(returning: $0) }
-            }
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        alert.layout()
-        if let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) {
-            var frame = alert.window.frame
-            frame.origin = CGPoint(x: screen.frame.midX - frame.width / 2, y: screen.frame.midY - frame.height / 2)
-            alert.window.setFrame(frame, display: false)
-        }
-        // 应用不在前台时 runModal 不一定把面板排上屏，先强行排上去
-        alert.window.orderFrontRegardless()
-        return alert.runModal()
-    }
-
-    /// 弹窗该挂到哪扇窗上：先拿正在用的那扇，其次任何一扇开着的普通窗口。
-    private static var hostWindow: NSWindow? {
-        let candidates = [NSApp.keyWindow, NSApp.mainWindow] + NSApp.windows
-        return candidates.lazy.compactMap { $0 }
-            .first { $0.isVisible && $0.canBecomeMain && $0.attachedSheet == nil }
+        return await alert.present()
     }
 
     /// 把设置窗口开到「更新」页，下载进度在那里看。
