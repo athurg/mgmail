@@ -101,6 +101,8 @@ struct SettingsView: View {
                 .tag(SettingsTab.updates.rawValue)
         }
         .frame(width: 500, height: 420)
+        // 开在主窗口所在的那块屏上，别落到另一台显示器上让人找不着
+        .background(FollowMainScreen())
     }
 }
 
