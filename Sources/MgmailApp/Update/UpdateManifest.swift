@@ -43,7 +43,7 @@ enum UpdateChannel: String, CaseIterable, Identifiable, Sendable {
     var detail: String {
         switch self {
         case .stable: return "只在打了版本号（tag）时更新。"
-        case .dev: return "每次有改动合并进 main 就更新，最新但没有经过整轮验证。"
+        case .dev: return "每次有改动合并进 main 就更新（正式版也算在内），最新但没有经过整轮验证。"
         }
     }
 
@@ -55,6 +55,19 @@ enum UpdateChannel: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .stable: return URL(string: "https://github.com/athurg/mgmail/releases/latest/download/manifest.json")!
         case .dev: return URL(string: "https://github.com/athurg/mgmail/releases/download/main-latest/manifest.json")!
+        }
+    }
+
+    /// 要查的所有 manifest，版本最高的那份算数。
+    ///
+    /// 开发版跟的是 main，而打了 tag 的提交本身也在 main 上，所以开发版得连正式版一起看。
+    /// 只看 `main-latest` 会漏：它是合并那一刻构建的，那时 tag 还没打，写进去的版本号是
+    /// 上一个 tag 的；之后在同一个提交上打的 tag 走正式版那条线，`main-latest` 不会重建。
+    /// 结果开发版用户拿着 1.13.3（构建 49），线上正式版 1.13.4 就是这个构建，却查不到。
+    var manifestURLs: [URL] {
+        switch self {
+        case .stable: return [manifestURL]
+        case .dev: return [manifestURL, UpdateChannel.stable.manifestURL]
         }
     }
 }

@@ -29,6 +29,7 @@ struct MgmailApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             ToggleSidebarCommand(appState: appState)
+            AboutCommand()
             CheckForUpdatesCommand()
             NewMailCommand(appState: appState)
             GetMailCommands(appState: appState)
@@ -102,6 +103,37 @@ struct MgmailApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationRouter.shared.install()
+    }
+}
+
+/// 「Mgmail → 关于」。
+///
+/// 还是系统那个标准关于面板，只是弹出之后看一眼落在哪块屏：它是 AppKit 自己管的独立窗口，
+/// 落点跟着带菜单栏的那块屏走，主窗口在另一台显示器上时就找不着它。
+struct AboutCommand: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("关于 \(AppFlavor.current.displayName)") { AboutPanel.show() }
+        }
+    }
+}
+
+/// 标准关于面板的出场。
+///
+/// 面板是个没标题的普通 `NSPanel`，AppKit 不给引用，只能在它第一次弹出时靠「多出来的那扇窗」
+/// 认出来记住；之后 AppKit 复用同一扇。已经开着再点菜单只是拿到前台，不动它的位置。
+@MainActor
+enum AboutPanel {
+    private static weak var panel: NSWindow?
+
+    static func show() {
+        let wasVisible = panel?.isVisible ?? false
+        let before = Set(NSApp.windows.map(ObjectIdentifier.init))
+        NSApp.orderFrontStandardAboutPanel(nil)
+        if panel == nil {
+            panel = NSApp.windows.first { !before.contains(ObjectIdentifier($0)) }
+        }
+        if let panel, !wasVisible { FollowMainScreen.moveToHostScreen(panel) }
     }
 }
 

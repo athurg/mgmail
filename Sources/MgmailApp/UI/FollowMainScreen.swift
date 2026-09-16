@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// 让独立窗口（设置这类单例窗口）开在主窗口所在的那块屏幕上。
+/// 让独立窗口（设置、关于这类单例窗口）开在主窗口所在的那块屏幕上。
 ///
 /// SwiftUI 的设置窗口自己记位置：上次关在哪块屏，下次就在哪块屏开。主窗口挪到另一台显示器
 /// 之后按 ⌘, 看着像没反应——设置窗口开在了看不见的那块屏上（关掉的副屏、合上的笔记本，
@@ -9,7 +9,7 @@ import AppKit
 /// 就挪过去，居中盖在那扇窗上。只在出来那一刻挪一次：之后用户手动拖去别的屏是他的选择，
 /// 不追着改；关掉再开算重新出来，再看一次。
 ///
-/// 挂法：`.background(FollowMainScreen())`。
+/// 挂法：`.background(FollowMainScreen())`；不归 SwiftUI 管的窗口直接调 `moveToHostScreen`。
 struct FollowMainScreen: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { PlacementView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
@@ -36,7 +36,7 @@ struct FollowMainScreen: NSViewRepresentable {
             let place: (Notification) -> Void = { [weak self] _ in
                 guard let self, self.pending, window.isVisible else { return }
                 self.pending = false
-                Self.moveToHostScreen(window)
+                FollowMainScreen.moveToHostScreen(window)
             }
             observers = [
                 center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window,
@@ -50,22 +50,25 @@ struct FollowMainScreen: NSViewRepresentable {
 
         deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 
-        /// 不在正在用的那扇窗所在的屏幕上，就居中盖到那扇窗上去（不越出那块屏的可用区域）。
-        private static func moveToHostScreen(_ window: NSWindow) {
-            guard let host = ModalHost.window(excluding: window),
-                  let hostScreen = host.screen,
-                  screen(containing: window.frame) !== hostScreen else { return }
-            var frame = window.frame
-            frame.origin = CGPoint(x: host.frame.midX - frame.width / 2, y: host.frame.midY - frame.height / 2)
-            let area = hostScreen.visibleFrame
-            frame.origin.x = min(max(frame.origin.x, area.minX), area.maxX - frame.width)
-            frame.origin.y = min(max(frame.origin.y, area.minY), area.maxY - frame.height)
-            window.setFrame(frame, display: true)
-        }
+    }
 
-        /// 窗口算在哪块屏上：看它中心点落在哪。`NSWindow.screen` 在窗口还没排上屏时是空的，不能用。
-        private static func screen(containing frame: NSRect) -> NSScreen? {
-            NSScreen.screens.first { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) }
-        }
+    /// 不在正在用的那扇窗所在的屏幕上，就居中盖到那扇窗上去（不越出那块屏的可用区域）。
+    ///
+    /// 不是 SwiftUI 场景的窗口（AppKit 自带的「关于」面板）挂不上视图，弹出之后直接调这个。
+    static func moveToHostScreen(_ window: NSWindow) {
+        guard let host = ModalHost.window(excluding: window),
+              let hostScreen = host.screen,
+              screen(containing: window.frame) !== hostScreen else { return }
+        var frame = window.frame
+        frame.origin = CGPoint(x: host.frame.midX - frame.width / 2, y: host.frame.midY - frame.height / 2)
+        let area = hostScreen.visibleFrame
+        frame.origin.x = min(max(frame.origin.x, area.minX), area.maxX - frame.width)
+        frame.origin.y = min(max(frame.origin.y, area.minY), area.maxY - frame.height)
+        window.setFrame(frame, display: true)
+    }
+
+    /// 窗口算在哪块屏上：看它中心点落在哪。`NSWindow.screen` 在窗口还没排上屏时是空的，不能用。
+    private static func screen(containing frame: NSRect) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) }
     }
 }
