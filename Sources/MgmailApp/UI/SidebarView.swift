@@ -28,7 +28,26 @@ struct SidebarView: View {
     private static let profileCardInset: CGFloat = 10
 
     var body: some View {
-        VStack(spacing: 0) {
+        ScrollView {
+            if appState.accounts.isEmpty {
+                emptyState
+            } else if appState.activeAccounts.isEmpty {
+                emptyProfileState
+            } else {
+                VStack(spacing: 12) {
+                    smartMailboxCard
+                    ForEach(appState.activeAccounts) { account in
+                        accountCard(account)
+                    }
+                }
+                // 顶上和分组卡片之间留的也是卡间距
+                .padding(EdgeInsets(top: 12, leading: 10, bottom: 10, trailing: 10))
+            }
+        }
+        // 分组卡片浮在滚动区上头，而不是把滚动区顶在它下面：滚动区若从卡片底边起，
+        // 滚上来的内容就被齐着卡片底边一刀切平，圆角旁边像多出一块方的。浮在上头，
+        // 内容从卡片的玻璃底下穿过去，圆角外面看到的就是内容本身。
+        .safeAreaInset(edge: .top, spacing: 0) {
             if !appState.accounts.isEmpty {
                 // 顶上一张卡片：第一行是窗口的三个圆点（见 MainWindowChrome，它们浮在卡片上，
                 // 中心在 y≈25），分组标签从第二行起排、排不下再折行。卡片顶边和中栏面板一样
@@ -41,22 +60,6 @@ struct SidebarView: View {
                 // 分组标签排成一行要多宽，加上卡片内外的留白，就是侧栏不让标签折行的最小宽度
                 .onPreferenceChange(ProfileSwitcherRowWidthKey.self) { rowWidth in
                     appState.sidebarMinWidth = rowWidth + (Self.profileCardPadding + Self.profileCardInset) * 2
-                }
-            }
-            ScrollView {
-                if appState.accounts.isEmpty {
-                    emptyState
-                } else if appState.activeAccounts.isEmpty {
-                    emptyProfileState
-                } else {
-                    VStack(spacing: 12) {
-                        smartMailboxCard
-                        ForEach(appState.activeAccounts) { account in
-                            accountCard(account)
-                        }
-                    }
-                    // 顶上和分组卡片之间留的也是卡间距
-                    .padding(EdgeInsets(top: 12, leading: 10, bottom: 10, trailing: 10))
                 }
             }
         }
