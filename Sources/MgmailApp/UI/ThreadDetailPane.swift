@@ -100,7 +100,7 @@ struct ThreadDetailPane: View {
             if model.placement.canTrash {
                 Button(role: .destructive) { onTrash() } label: {
                     Image(systemName: "trash")
-                }.help("删除（移入废纸篓）")
+                }.help("删除（⌘⌫，移入废纸篓）").keyboardShortcut(.delete, modifiers: .command)
             }
 
             Divider().frame(height: 14)
