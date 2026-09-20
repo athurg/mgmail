@@ -35,6 +35,22 @@ final class ThreadRowCoordinator: ObservableObject {
         if fresh != labelMap { labelMap = fresh }
     }
 
+    /// 选中的行最后一次出现在列表里时的下标（多选取最靠下的那个，和删除时的算法一致）。
+    ///
+    /// 删除、归档后要选「下一封」，靠的是被删那行在列表里的位置；可它有时已经不在列表里了：
+    /// 开着「仅未读」时，一封邮件点开即已读、当场就从列表里消失，右栏却还看着它——
+    /// 这时按删除，按行去找找不到，选择就只能清空，用户看到的是右栏变成「未选择邮件」，
+    /// 得回列表再点一下。记住它最后待过的位置，被删时就选补到这个位置上的那一行。
+    private var anchorIndex: Int?
+
+    /// 由列表每次布局时调用：选中的行还在列表里就更新位置，不在了就留着上一次的。
+    func noteLayout(summaries: [ThreadSummary], selection: Set<SelectedThread>) {
+        guard !selection.isEmpty,
+              let index = summaries.indices.last(where: { selection.contains(summaries[$0].key) })
+        else { return }
+        anchorIndex = index
+    }
+
     // MARK: - 作用对象
 
     /// 行上手势/菜单的作用对象：若该行属于当前多选，则作用于整组，否则仅该行。
@@ -150,7 +166,11 @@ final class ThreadRowCoordinator: ObservableObject {
         // 找被删项在列表中的最大下标，选其后第一个未被删的；没有则选其前一个
         let list = model.summaries
         let removedIdxs = list.indices.filter { keySet.contains(list[$0].key) }
-        guard let last = removedIdxs.max() else { return .some(nil) }
+        guard let last = removedIdxs.max() else {
+            // 被删的已经不在列表里（见 anchorIndex）：选补到它原来位置上的那一行
+            guard let anchor = anchorIndex, !list.isEmpty else { return .some(nil) }
+            return .some(list[min(anchor, list.count - 1)].key)
+        }
         if let n = (last + 1 ..< list.count).first(where: { !keySet.contains(list[$0].key) }) {
             return .some(list[n].key)
         }

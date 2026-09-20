@@ -139,7 +139,7 @@ struct MessageWindowView: View {
                         run { try await model.trash() }
                     } label: {
                         Image(systemName: "trash")
-                    }.help("删除（移入废纸篓）")
+                    }.help("删除（⌘⌫，移入废纸篓）").keyboardShortcut(.delete, modifiers: .command)
                 }
 
                 // 归档和移回收件箱是同一个按钮的两副面孔，见 ThreadDetailPane 里的同一处

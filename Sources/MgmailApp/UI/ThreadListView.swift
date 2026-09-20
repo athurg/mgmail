@@ -387,6 +387,7 @@ struct ThreadListView: View {
         rows.model = model
         rows.appState = appState
         rows.updateLabelMap(labelMap)
+        rows.noteLayout(summaries: model.summaries, selection: appState.selectedThreads)
 
         let selection = Binding<Set<SelectedThread>>(
             get: { appState.selectedThreads },
@@ -548,7 +549,8 @@ struct ThreadListView: View {
             HStack(spacing: 14) {
                 Text("已选 \(sel.count) 封").font(.callout).foregroundStyle(.secondary)
                 if placements.contains(where: \.canTrash) {
-                    Button { rows.performTrash(sel) } label: { Image(systemName: "trash") }.help("删除所选")
+                    Button { rows.performTrash(sel) } label: { Image(systemName: "trash") }
+                        .help("删除所选（⌘⌫）").keyboardShortcut(.delete, modifiers: .command)
                 }
                 if placements.contains(where: \.canArchive) {
                     Button { rows.performArchive(sel) } label: { Image(systemName: "archivebox") }.help("归档所选")

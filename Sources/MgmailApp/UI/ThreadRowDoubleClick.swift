@@ -32,7 +32,20 @@ struct ThreadListDoubleClick: NSViewRepresentable {
         func install() {
             guard let table = enclosingTable(), table.doubleAction != #selector(openInWindow) else { return }
             table.target = self
+            table.action = #selector(rowClicked)
             table.doubleAction = #selector(openInWindow)
+        }
+
+        /// 单击某一行：把键盘焦点交给列表。
+        ///
+        /// 窗口刚成为主窗口时，AppKit 把面板头里的搜索框定为第一响应者；从那以后
+        /// SwiftUI 的 List 点行只改选中、不抢焦点——行是亮了（灰的），Delete 和方向键
+        /// 却还打在搜索框里，用户看到的就是「按 Delete 删不掉」。表格自己的单击动作
+        /// 在这里补上一手：点了行，焦点就归表格。
+        @objc private func rowClicked(_ sender: Any?) {
+            guard let table = sender as? NSTableView ?? enclosingTable(), table.clickedRow >= 0,
+                  let window = table.window, window.firstResponder !== table else { return }
+            window.makeFirstResponder(table)
         }
 
         /// 找中栏这张表：从自己往上走，每层在子树里搜一次。
