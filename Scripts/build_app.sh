@@ -48,6 +48,7 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
 copy_app_icon "$APP_DIR"
+copy_oauth_client "$APP_DIR"
 write_info_plist "$APP_DIR" "$SHORT_VERSION" "$BUILD_NUMBER"
 
 # 用固定的自签名证书签名，让 Keychain 的 designated requirement 保持稳定，

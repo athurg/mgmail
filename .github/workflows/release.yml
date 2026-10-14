@@ -62,7 +62,14 @@ jobs:
           MGMAIL_TAG: ${{ steps.target.outputs.tag }}
           MGMAIL_CHANNEL: ${{ steps.target.outputs.channel }}
           MGMAIL_NOTES_FILE: notes.md
+          # 内置进 .app 的 OAuth 客户端（oauth_client.json 原文），仓库 Settings → Secrets and variables
+          # → Actions → Variables 里配。故意用 Variable 而不是 Secret：随包发出去的东西本来就公开，
+          # 藏着反而没法核对配的是哪一份。没配也照样出包，只是用户得自己放 oauth_client.json
+          MGMAIL_OAUTH_CLIENT: ${{ vars.MGMAIL_OAUTH_CLIENT }}
         run: |
+          if [[ -z "$MGMAIL_OAUTH_CLIENT" ]]; then
+            echo "::warning::没配变量 MGMAIL_OAUTH_CLIENT，这一包不内置 OAuth 客户端"
+          fi
           swift --version
           Scripts/package_dist.sh
           cat dist/manifest.json

@@ -46,9 +46,16 @@ Scripts/dev_reset.sh --empty  # 清掉，下次启动是空环境（只留 oauth
 应用靠 Info.plist 里的 `MgmailFlavor` 认自己是哪种包（`App/AppFlavor.swift`）；
 `swift run` 直接跑的裸可执行文件没有 bundle，也按开发包算。
 
-## 首次配置 Gmail 访问（必需）
+## 首次配置 Gmail 访问
 
-应用通过你自己的 Google OAuth 客户端访问 Gmail：
+GitHub Release 出的包内置了 OAuth 客户端，装好直接「添加账户」即可——前提是你的 Gmail
+地址已被加进那个 Cloud 项目的 **Test users**（同意屏幕还在「测试」状态，没加的会被 Google 拒掉）。
+
+内置的客户端来自 CI 的仓库变量（Actions Variables）`MGMAIL_OAUTH_CLIENT`（`oauth_client.json` 原文），**不进仓库**；
+本机打包则读 `Resources/oauth_client.json`（已被 `.gitignore` 挡住），或用环境变量
+`MGMAIL_OAUTH_CLIENT` / `MGMAIL_OAUTH_CLIENT_FILE` 指定。两样都没有就不内置。
+
+想换成自己的客户端，或者手里的包没有内置，就照下面建一个，放进用户目录——那里的文件优先于内置的：
 
 1. https://console.cloud.google.com/ → 新建项目。
 2. 「API 和服务」→ 启用 **Gmail API**。
@@ -62,7 +69,7 @@ Scripts/dev_reset.sh --empty  # 清掉，下次启动是空环境（只留 oauth
 
 ## 功能（v1）
 
-- 多账户 OAuth 登录（PKCE + 回环重定向，refresh token 存 Keychain）
+- 多账户 OAuth 登录（PKCE + 回环重定向，refresh token 存权限 0600 的本地文件）
 - 读取收件邮件：会话列表、正文（WKWebView，默认拦截远程内容）、附件下载；信头按需显示收件人 / 抄送 / 密送（有才显示，右栏点一下摊开长名单）
 - 标签管理：加/去标签、已读未读、加星标、归档、新建/改名/删除标签
 - 写邮件：撰写（⌘N）、回复 / 全部回复 / 转发（⌘R、⇧⌘R、⇧⌘F）、抄送密送、附件、存草稿
@@ -322,7 +329,7 @@ Scripts/
 都在 `~/Library/Application Support/Mgmail/` 下（开发包是 `Mgmail Dev/`，两边互不相干）：
 
 ```
-oauth_client.json          Google OAuth 客户端配置（自己放进去的）
+oauth_client.json          Google OAuth 客户端配置（可选，自己放的，优先于 .app 内置的）
 tokens/<账号>.token        refresh token，权限 0600
 avatars/<账号>.png         账号头像
 Cache/<账号>/

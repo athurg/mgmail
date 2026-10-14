@@ -126,3 +126,35 @@ copy_app_icon() {
     echo "==> 跳过图标：$icon_src 不存在"
   fi
 }
+
+# copy_oauth_client <app 目录>
+# 把 Google OAuth 客户端内置进 Resources/oauth_client.json，装好的应用不用再自己去 Cloud Console 建一个
+# （用户目录里放了自己的那份，应用会优先用那份，见 Auth/GoogleConfig.swift）。来源按顺序：
+#   1. 环境变量 MGMAIL_OAUTH_CLIENT：JSON 原文。CI 从仓库变量注入，见 .github/workflows/release.yml
+#   2. 文件 ${MGMAIL_OAUTH_CLIENT_FILE:-Resources/oauth_client.json}：本机打包用，.gitignore 已挡住不入库
+# 都没有就不内置，应用退回首次运行时的配置引导，照样能用。
+copy_oauth_client() {
+  local app_dir="$1" dest="$1/Contents/Resources/oauth_client.json"
+  local file="${MGMAIL_OAUTH_CLIENT_FILE:-Resources/oauth_client.json}"
+  if [[ -n "${MGMAIL_OAUTH_CLIENT:-}" ]]; then
+    printf '%s' "$MGMAIL_OAUTH_CLIENT" > "$dest"
+  elif [[ -f "$file" ]]; then
+    cp "$file" "$dest"
+  else
+    echo "==> 跳过内置 OAuth 客户端：没有 MGMAIL_OAUTH_CLIENT，也没有 $file"
+    return 0
+  fi
+  # 格式不对宁可打包失败：内置一份坏的，用户只会看到「添加账户」莫名其妙地不出来
+  if ! python3 - "$dest" <<'PYEOF'
+import json, sys
+root = json.load(open(sys.argv[1], encoding="utf-8"))
+node = root.get("installed") or root.get("web") or {}
+sys.exit(0 if node.get("client_id") else 1)
+PYEOF
+  then
+    rm -f "$dest"
+    echo "内置的 OAuth 客户端不是有效的 oauth_client.json（缺 installed/web.client_id）" >&2
+    exit 1
+  fi
+  echo "==> 已内置 OAuth 客户端"
+}
