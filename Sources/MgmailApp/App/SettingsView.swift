@@ -1,40 +1,15 @@
 import SwiftUI
 
 /// 应用偏好设置的存储 key，集中管理避免字符串散落。
+/// 留在 UserDefaults 里的界面状态的键名（记住上次的选择，不是设置窗口里的项）。
+/// 配置都在 `settings.json`，见 `AppSettings`。
 enum SettingsKey {
-    /// 是否默认加载邮件中的远程内容（图片/样式等）。默认关闭，与 Apple Mail 一致。
-    ///
-    /// 关闭不只是为了隐私：WebKit 在远程资源加载完之前不渲染任何内容，
-    /// 一封带几个外链图片的邮件，正文要等上一两秒才出得来；挡掉之后是秒开。
-    static let loadRemoteContentByDefault = "loadRemoteContentByDefault"
-    /// 是否按会话（Thread）合并显示邮件。默认关闭，即每行只显示一封邮件。
-    static let conversationView = "conversationView"
     /// 设置窗口上次停留的标签页（用于从菜单/右键直达对应页）。
     static let settingsTab = "settings.selectedTab"
-    /// 列表右上角的已读/未读过滤（记住上次选择，非设置窗口里的项）。
+    /// 列表右上角的已读/未读过滤。
     static let readFilter = "threadList.readFilter"
-    /// 本地搜索的范围：当前邮箱还是所有邮件（记住上次选择，非设置窗口里的项）。
+    /// 本地搜索的范围：当前邮箱还是所有邮件。
     static let searchScope = "threadList.searchScope"
-    /// 每个账户最多回溯多少封邮件。
-    static let backfillLimit = "sync.backfillLimit"
-    /// 每个账户最多回溯多少天。
-    static let backfillDays = "sync.backfillDays"
-    /// 新邮件通知总开关。
-    static let notifyEnabled = "notify.enabled"
-    /// 只通知「主要」邮件（推广/社交/论坛不弹）。
-    static let notifyMainCategoryOnly = "notify.mainCategoryOnly"
-    /// 通知带提示音。
-    static let notifySound = "notify.sound"
-    /// 在 Dock 图标上显示未读数。
-    static let notifyDockBadge = "notify.dockBadge"
-    /// 被静音的账号（邮箱地址数组）。
-    static let notifyMutedAccounts = "notify.mutedAccounts"
-    /// 定时同步时顺带检查更新。
-    static let updateAutoCheck = "update.autoCheck"
-    /// 更新渠道：`stable` 只跟 tag，`dev` 跟 main 的每次合并。
-    static let updateChannel = "update.channel"
-    /// 用户点过「跳过此版本」的那个构建号，定时检查不再提它。
-    static let updateSkippedBuild = "update.skippedBuild"
 }
 
 /// 设置窗口的标签页。
@@ -44,8 +19,8 @@ enum SettingsTab: String {
 
 /// 设置窗口（⌘,）：账号、分组、显示、同步、通知、隐私、更新。
 struct SettingsView: View {
-    @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = false
-    @AppStorage(SettingsKey.conversationView) private var conversationView = false
+    @Setting(\.display.loadRemoteContentByDefault) private var loadRemoteByDefault
+    @Setting(\.display.conversationView) private var conversationView
     @AppStorage(SettingsKey.settingsTab) private var selectedTab = SettingsTab.accounts.rawValue
 
     var body: some View {
@@ -113,8 +88,8 @@ struct SettingsView: View {
 struct SyncSettingsPane: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var mailStore: MailStore
-    @AppStorage(SettingsKey.backfillLimit) private var limit = 500
-    @AppStorage(SettingsKey.backfillDays) private var days = 90
+    @Setting(\.sync.backfillLimit) private var limit
+    @Setting(\.sync.backfillDays) private var days
 
     private static let limits = [200, 500, 1000, 2000, 5000]
     private static let dayChoices = [30, 90, 180, 365, 730]

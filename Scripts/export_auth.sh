@@ -23,11 +23,18 @@ else
   echo "   ⚠️ 未找到 tokens/（可能还没登录过账号）"
 fi
 
-# 账号列表与界面偏好（UserDefaults）
-if defaults export com.mgmail.app "$STAGE/prefs.plist" 2>/dev/null; then
-  echo "   账号列表/偏好 ✓"
+# 账号列表、分组与各项设置
+if [[ -f "$SUPPORT/settings.json" ]]; then
+  cp "$SUPPORT/settings.json" "$STAGE/"; echo "   settings.json ✓"
 else
-  echo "   ⚠️ 无法导出偏好（账号列表）"
+  echo "   ⚠️ 未找到 settings.json（老版本的账号列表还在偏好里，下面一起导出）"
+fi
+
+# 界面状态（栏宽、标签树展开到哪）；没升级过的老版本，账号列表也在这里
+if defaults export com.mgmail.app "$STAGE/prefs.plist" 2>/dev/null; then
+  echo "   界面状态 ✓"
+else
+  echo "   ⚠️ 无法导出界面状态（不影响使用）"
 fi
 
 # 附带新机安装脚本，便于对方一键安装

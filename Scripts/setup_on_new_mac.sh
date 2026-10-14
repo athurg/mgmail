@@ -30,9 +30,10 @@ if [[ -d "$HERE/tokens" ]]; then
   chmod 600 "$SUPPORT/tokens/"*.token 2>/dev/null || true
   echo "   tokens/ ✓"
 fi
+[[ -f "$HERE/settings.json" ]] && cp "$HERE/settings.json" "$SUPPORT/" && echo "   settings.json ✓"
 if [[ -f "$HERE/prefs.plist" ]]; then
   defaults import com.mgmail.app "$HERE/prefs.plist"
-  echo "   账号列表/偏好 ✓"
+  echo "   界面状态 ✓"
 fi
 
 echo ""

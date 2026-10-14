@@ -29,10 +29,10 @@ struct MessageWindowView: View {
     @State private var pointerInside = false
     /// 开窗那一刻的显示方式。
     ///
-    /// 不用 `@AppStorage` 跟着设置走：`target.threadID` 在会话模式下是 threadId、
+    /// 不用 `@Setting` 跟着设置走：`target.threadID` 在会话模式下是 threadId、
     /// 否则是 messageId，窗口开着时用户去改设置，这扇窗手里的 id 就会被按错的语义去解释。
     /// 开窗时定下来，这一扇窗一辈子按它来。
-    @State private var conversation = UserDefaults.standard.bool(forKey: SettingsKey.conversationView)
+    @State private var conversation = SettingsStore.shared.current.display.conversationView
 
     var body: some View {
         Group {

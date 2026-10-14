@@ -92,13 +92,14 @@ GitHub Release 出的包内置了 OAuth 客户端，装好直接「添加账户�
 
 ## 自检
 
-四套自检，都是纯 Foundation、独立编译即可运行：
+五套自检，都独立编译即可运行：
 
 ```bash
 Scripts/check_mime.sh       # 报文拼装
 Scripts/check_mailbox.sh    # 邮箱归属判断
 Scripts/check_search.sh     # 本地搜索的解析与匹配
 Scripts/check_rawsource.sh  # 邮件原文的拆解
+Scripts/check_settings.sh   # settings.json 的读取与从 UserDefaults 搬家
 ```
 
 盯的都是那些**本地看着没错、事后才发现不对**的地方。
@@ -123,6 +124,11 @@ Scripts/check_rawsource.sh  # 邮件原文的拆解
 头部会连成一条；折行不展开就少半条 `Received`；encoded-word 不解开中文主题就是一串
 base64，相邻两个词之间的空白不吞掉则每隔几个字多个空格；非 UTF-8 的报文解不开不能
 整封空白。看原文的场合（查退信、查发件人是不是伪造的）恰恰最经不起看错。
+
+`check_settings.sh`（`App/SettingsStore.swift`）——`settings.json` 怎么读、老配置怎么搬。
+盯的是「升级之后设置悄悄被重置」的那几条路：老文件缺了新版本加的键、手改时某一层只写了
+一个键、多了个认不得的键就整份解不开；从 UserDefaults 搬过来时把「没设过」和「特意关掉」
+混为一谈、顺手删了不归它管的界面状态。这些都不报错，只会让人以为设置丢了。
 
 > 它们不是 `swift test`。本项目按设计不依赖完整 Xcode，因而没有 XCTest 也没有
 > swift-testing 可用；这几个脚本用 `swiftc` 把检查文件连同被检查的几个源文件编出来跑，
@@ -329,6 +335,7 @@ Scripts/
 都在 `~/Library/Application Support/Mgmail/` 下（开发包是 `Mgmail Dev/`，两边互不相干）：
 
 ```
+settings.json              账号列表、分组、设置窗口里的各项（人能读能改，改之前先退出应用）
 oauth_client.json          Google OAuth 客户端配置（可选，自己放的，优先于 .app 内置的）
 tokens/<账号>.token        refresh token，权限 0600
 avatars/<账号>.png         账号头像
@@ -342,6 +349,12 @@ Cache/<账号>/
 Logs/                      网络活动日志，保留 7 天
 updates/                   下载中的更新包，装完或下次启动就清掉
 ```
+
+换机器时把整个目录拷过去就是全部配置和数据。不在这里的只有界面状态——栏宽、标签树展开到哪、
+过滤器选了什么——它们留在 UserDefaults（`com.mgmail.app`），丢了也就是重新拖一下。
+老版本的配置都存在 UserDefaults 里，升级后第一次启动时搬进 `settings.json`，搬完删掉老键
+（`App/SettingsStore.swift`）。`settings.json` 解析不了时会挪成 `settings.broken-<时间>.json`、
+按默认设置启动，改好了换回原名就回来了。
 
 账号目录名是「邮箱去掉符号 + 地址摘要」，缀摘要是为了让 `a.b@x.com` 和
 `a_b@x.com` 不会落到同一个路径上。旧布局在启动时由 `Cache/StorageMigration.swift`

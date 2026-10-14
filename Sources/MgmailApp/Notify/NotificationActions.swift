@@ -60,7 +60,7 @@ final class NotificationActionHandler {
     /// 通知里的操作按会话还是按单封走，跟着列表的显示设置——
     /// 用户看到的是一行会话，归档就该归档整串。
     private var conversation: Bool {
-        UserDefaults.standard.bool(forKey: SettingsKey.conversationView)
+        SettingsStore.shared.current.display.conversationView
     }
 
     func perform(_ action: NotificationAction, route: NotificationRoute) async {

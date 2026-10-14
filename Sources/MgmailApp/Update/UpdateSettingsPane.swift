@@ -3,8 +3,8 @@ import SwiftUI
 /// 设置 → 更新。
 struct UpdateSettingsPane: View {
     @ObservedObject private var checker = UpdateChecker.shared
-    @AppStorage(SettingsKey.updateAutoCheck) private var autoCheck = true
-    @AppStorage(SettingsKey.updateChannel) private var channel = UpdateChannel.stable.rawValue
+    @Setting(\.update.autoCheck) private var autoCheck
+    @Setting(\.update.channel) private var channel
 
     var body: some View {
         Form {

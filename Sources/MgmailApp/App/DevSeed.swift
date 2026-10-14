@@ -10,7 +10,9 @@ import Foundation
 /// - `~/Library/Application Support/Mgmail/` 整个目录（`Logs/`、`updates/` 除外，那是日志和
 ///   下载中的更新包）。APFS 上用 `clonefile` 整棵树克隆，瞬间完成、不额外占盘，改到哪一块
 ///   才真正复制哪一块；不是 APFS 就退回逐项拷贝。
-/// - UserDefaults 里 `com.mgmail.app` 这个域的全部键：账号列表、分组、各项设置都在里面。
+/// - UserDefaults 里 `com.mgmail.app` 这个域的全部键：栏宽、标签树展开状态这些界面状态。
+///   账号列表、分组、各项设置在目录里的 `settings.json`，随上一条一起过来；正式包要是还没
+///   升到有这个文件的版本，它们也还在这个域里，开发包启动后自己会搬（见 `SettingsStore`）。
 ///
 /// 只在开发包目录**还不存在**时做，幂等；正式包里调用等于空操作。
 /// 想要一份新的快照或者干净环境：`Scripts/dev_reset.sh`。
