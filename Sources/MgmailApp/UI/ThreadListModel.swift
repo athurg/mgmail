@@ -51,7 +51,9 @@ struct ThreadSummary: Identifiable, Hashable {
         isStarred = messages.contains(where: \.isStarred)
         hasAttachment = messages.contains(where: \.hasAttachment)
         messageCount = messages.count
-        labelIds = Array(Set(messages.flatMap(\.labelIds)))
+        // 排个序：Set 倒出来的顺序每次都可能不同，而行是按值比较的——
+        // 标签一个没变、只是换了个顺序，也会被当成这一行变了。
+        labelIds = Set(messages.flatMap(\.labelIds)).sorted()
         accountID = account
     }
 }
@@ -96,8 +98,14 @@ enum ReadFilter: String, CaseIterable, Identifiable {
 /// 所以切换邮箱是纯本地计算，一个网络请求都不会发。
 @MainActor
 final class ThreadListModel: ObservableObject {
-    @Published private(set) var summaries: [ThreadSummary] = []
+    @Published private(set) var summaries: [ThreadSummary] = [] {
+        didSet { summariesVersion &+= 1 }
+    }
     @Published var loadError: String?
+
+    /// `summaries` 每换一次加一。视图那边拿它当缓存的钥匙（见 `ThreadRowCoordinator.rowItems`）：
+    /// 比对一个整数，而不是把上万行逐行比一遍。
+    private(set) var summariesVersion = 0
 
     private var store: MailStore?
     private var cancellable: AnyCancellable?
@@ -126,12 +134,34 @@ final class ThreadListModel: ObservableObject {
         isSearching && !searchScope.isMailbox ? allMailQuery : boxQuery
     }
 
-    /// 池子里的邮件一变就重算。
+    /// 池子里的邮件一变就跟着变。
     func bind(to store: MailStore) {
         guard self.store !== store else { return }
         self.store = store
-        cancellable = store.$revision.sink { [weak self] _ in
-            self?.scheduleRecompute()
+        // 订阅当场回放的那一下不要：它不代表任何变化，紧跟着的 `configure` 会算第一遍
+        cancellable = store.$revision.dropFirst().sink { [weak self, weak store] _ in
+            guard let self, let store else { return }
+            self.poolChanged(store.lastChange)
+        }
+    }
+
+    /// 一次只改几封的标签时就地改那几行，超过这个数就整份重算。
+    ///
+    /// 就地改每一行都要在列表里找一遍它，行数乘上去之后不比重算便宜。
+    private static let patchLimit = 32
+
+    private func poolChanged(_ change: MailStore.PoolChange) {
+        guard case .labels(let account, let ids) = change else {
+            scheduleRecompute()
+            return
+        }
+        // 别的账号的标签变动，和这张列表没有关系
+        guard accounts.contains(account) else { return }
+        // 已经有一次整份重算在等着了，就都交给它：这会儿的 `summaries` 本来就落后于池子
+        if recomputeTask == nil, ids.count <= Self.patchLimit {
+            patch(account: account, ids: ids)
+        } else {
+            scheduleRecompute()
         }
     }
 
@@ -181,33 +211,110 @@ final class ThreadListModel: ObservableObject {
         recomputeTask = nil
         lastRecompute = .now
         guard let store else { summaries = []; return }
-        let box = activeQuery
-        let query = search
         var rows: [ThreadSummary] = []
         for account in accounts {
             let all = store.messages(account: account)
             if conversation {
-                // 先分组再判断归属：一串会话只要有一封在这个邮箱，整串就显示，
-                // 而计数、标签、状态取的是整串——和 Gmail、Apple Mail 的会话语义一致。
-                // （反过来先过滤再分组的话，收件箱里那串「3 封」会缩水成「在收件箱的那 1 封」。）
                 for (thread, group) in Dictionary(grouping: all, by: \.threadId) {
-                    guard group.contains(where: { box.belongs($0) }) else { continue }
-                    // 搜索同理按整串算：串里有一封命中，整串就是结果。行上显示的
-                    // 本来就是整串，只把命中的那一封抠出来反而对不上下文。
-                    guard query.isEmpty || group.contains(where: { query.matches($0) }) else { continue }
-                    let sorted = group.sorted { ($0.date ?? .distantPast) < ($1.date ?? .distantPast) }
-                    if let row = ThreadSummary(thread: thread, messages: sorted, account: account) {
+                    if let row = row(thread: thread, messages: group, account: account) {
                         rows.append(row)
                     }
                 }
             } else {
-                rows += all.filter { box.belongs($0) && (query.isEmpty || query.matches($0)) }
-                    .map { ThreadSummary(message: $0, account: account) }
+                rows += all.compactMap { row(message: $0, account: account) }
             }
         }
-        summaries = rows
-            .filter { filter.matches($0) }
-            .sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }
+        summaries = rows.sorted(by: Self.precedes)
+    }
+
+    /// 只有几封邮件的标签变了：把它们所在的那几行改掉，其余的不动。
+    ///
+    /// 结果必须和整份重算一模一样，所以一行该不该在、长什么样，和 `recompute` 问的是
+    /// 同一对函数（`row(message:)` / `row(thread:)`）。标签变动不改邮件的时间，
+    /// 原来就在列表里的行位置不变；新进来的按时间插到该在的地方。
+    private func patch(account: String, ids: [String]) {
+        guard let store else { return }
+        // 这几封邮件各自落在哪一行（会话模式下几封可能是同一串）
+        var rowIDs: [String] = []
+        for id in ids {
+            let rowID = conversation ? (store.message(account: account, id: id)?.threadId ?? id) : id
+            if !rowIDs.contains(rowID) { rowIDs.append(rowID) }
+        }
+
+        var rows = summaries
+        var changed = false
+        for rowID in rowIDs {
+            let fresh: ThreadSummary?
+            if conversation {
+                fresh = row(thread: rowID,
+                            messages: store.threadMessages(account: account, threadID: rowID),
+                            account: account)
+            } else {
+                fresh = store.message(account: account, id: rowID).flatMap { row(message: $0, account: account) }
+            }
+            let index = rows.firstIndex { $0.id == rowID && $0.accountID == account }
+            switch (index, fresh) {
+            case (nil, nil):
+                continue
+            case (let index?, nil):
+                rows.remove(at: index)
+            case (let index?, let fresh?):
+                guard rows[index] != fresh else { continue }
+                rows[index] = fresh
+            case (nil, let fresh?):
+                rows.insert(fresh, at: Self.insertionIndex(for: fresh, in: rows))
+            }
+            changed = true
+        }
+        if changed { summaries = rows }
+    }
+
+    /// 这封邮件在当前列表里是哪一行；不该出现（不在这个邮箱、没命中搜索、被过滤掉）则为 nil。
+    private func row(message: PooledMessage, account: String) -> ThreadSummary? {
+        guard activeQuery.belongs(message), search.isEmpty || search.matches(message) else { return nil }
+        let row = ThreadSummary(message: message, account: account)
+        return filter.matches(row) ? row : nil
+    }
+
+    /// 这串会话在当前列表里是哪一行；不该出现则为 nil。`messages` 是整串，顺序不限。
+    ///
+    /// 先看整串再判断归属：一串会话只要有一封在这个邮箱，整串就显示，
+    /// 而计数、标签、状态取的是整串——和 Gmail、Apple Mail 的会话语义一致。
+    /// （反过来先过滤再分组的话，收件箱里那串「3 封」会缩水成「在收件箱的那 1 封」。）
+    private func row(thread: String, messages: [PooledMessage], account: String) -> ThreadSummary? {
+        let box = activeQuery
+        guard messages.contains(where: { box.belongs($0) }) else { return nil }
+        // 搜索同理按整串算：串里有一封命中，整串就是结果。行上显示的
+        // 本来就是整串，只把命中的那一封抠出来反而对不上下文。
+        guard search.isEmpty || messages.contains(where: { search.matches($0) }) else { return nil }
+        // 时间相同的按 id 定先后，否则「最新一封」是谁会随传进来的顺序变
+        let sorted = messages.sorted {
+            let (x, y) = ($0.date ?? .distantPast, $1.date ?? .distantPast)
+            return x != y ? x < y : $0.id < $1.id
+        }
+        guard let row = ThreadSummary(thread: thread, messages: sorted, account: account),
+              filter.matches(row) else { return nil }
+        return row
+    }
+
+    /// 列表的顺序：新的在前。时间相同的按 id 定先后——没有这一条，同一秒到的几封信
+    /// 谁先谁后全看字典当时怎么排，每重算一次都可能换个位置。
+    private static func precedes(_ a: ThreadSummary, _ b: ThreadSummary) -> Bool {
+        let (x, y) = (a.date ?? .distantPast, b.date ?? .distantPast)
+        if x != y { return x > y }
+        if a.id != b.id { return a.id > b.id }
+        return a.accountID > b.accountID
+    }
+
+    /// 新的一行该插在已经排好的列表的哪儿（二分）。
+    private static func insertionIndex(for row: ThreadSummary, in rows: [ThreadSummary]) -> Int {
+        var low = 0
+        var high = rows.count
+        while low < high {
+            let mid = (low + high) / 2
+            if precedes(rows[mid], row) { low = mid + 1 } else { high = mid }
+        }
+        return low
     }
 
     /// 一行对应池子里的哪些邮件：会话模式下是整串，否则就它自己。

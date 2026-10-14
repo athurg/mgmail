@@ -196,6 +196,14 @@ struct ThreadListView: View {
                        value: RawSourceTarget(accountID: request.account, messageID: request.id))
         }
         .onChange(of: appState.selectedThreads) { _, sel in
+            // 摘要只有多选的叠加卡片用得上。只选一封时不去算、也不往 appState 里写：
+            // 写一次就是全窗口所有订阅它的视图再重跑一遍，而单选正是点得最勤的时候。
+            guard sel.count > 1 else {
+                if !appState.selectedInfos.isEmpty {
+                    Task { @MainActor in appState.selectedInfos = [] }
+                }
+                return
+            }
             // 同步选中项摘要（供右栏多选叠加卡片），保持列表顺序。
             // 必须推迟一拍再写回：这里仍处在 NSTableView 的选择回调里，
             // 同步改 appState 会让 List 在 delegate 内部重建（AppKit 会报 reentrant 警告），
@@ -397,7 +405,7 @@ struct ThreadListView: View {
             }
         )
         return List(selection: selection) {
-            ForEach(rowItems) { item in
+            ForEach(rows.rowItems()) { item in
                 row(item.summary)
             }
             backfillFooter
@@ -423,26 +431,6 @@ struct ThreadListView: View {
     }
 
     // MARK: - 单行（可拖入标签）
-
-    /// 列表行的身份：会话 key 再加上「这行有没有标签 chip」。
-    ///
-    /// macOS 的 List 底下是 NSTableView，行高按行身份缓存：身份不变时只换内容，
-    /// 高度沿用旧值 —— 给一封原本没标签的邮件打上标签，chip 那一行就会被行的下边缘裁掉。
-    /// 身份只在「有 chip / 没 chip」之间翻转，正对应唯一一次真实的高度变化；
-    /// 已读、旗标这些不改高度的变化不参与，免得白白重建整行。
-    private struct RowItem: Identifiable {
-        let summary: ThreadSummary
-        let hasChips: Bool
-        var id: String { "\(summary.accountID)\t\(summary.id)\t\(hasChips ? 1 : 0)" }
-    }
-
-    private var rowItems: [RowItem] {
-        let map = rows.labelMap
-        return model.summaries.map { summary in
-            RowItem(summary: summary,
-                    hasChips: summary.labelIds.contains { map["\(summary.accountID)\t\($0)"] != nil })
-        }
-    }
 
     private func row(_ summary: ThreadSummary) -> some View {
         // 传给行的必须全是可比较的值加一个稳定的引用；一旦混进闭包，
@@ -639,28 +627,38 @@ private struct ThreadListRow: View {
     /// 静态访问，不作为字段存起来：字段里一旦有引用，行上的 modifier 就无法被判定为「没变」。
     private var rows: ThreadRowCoordinator { .shared }
 
-    @ViewBuilder
+    /// body 的顶层必须恒为「一个视图」，分支只能藏在容器里面。
+    ///
+    /// List 每次更新都要先数清楚一共多少行、各是什么 id。行的类型里只要顶层带着
+    /// `if/else`，SwiftUI 就没法从类型上看出「一条数据恰好一行」，只能把**每一行**
+    /// 都实例化出来数——不是屏幕上那二十来行，是整张列表，连同每行的右键菜单。
+    /// 一千多行的邮箱里，标一封已读、切一次邮箱，都要为此把一千多个 body 跑一遍。
+    /// 套进 ZStack 之后顶层是个确定的单视图，看不见的行就不再被碰。
+    ///
+    /// 滑动动作是写给 List 的行属性，得留在容器外面，挂在里面 List 看不到。
     var body: some View {
-        let base = ThreadRow(summary: summary, labelMap: labelMap,
-                  accountBadge: accountBadge, avatarReloadToken: avatarReloadToken)
-            .contextMenu { menu }
-            // 右滑：标记已读/未读、旗标；左滑：归档、删除（纯图标）
-            .swipeActions(edge: .leading, allowsFullSwipe: true) { leadingSwipe }
-            .swipeActions(edge: .trailing, allowsFullSwipe: true) { trailingSwipe }
-            .opacity(affinity.dimmed ? 0.35 : 1)
-            .animation(.easeOut(duration: 0.15), value: affinity.dimmed)
+        ZStack {
+            let base = ThreadRow(summary: summary, labelMap: labelMap,
+                                 accountBadge: accountBadge, avatarReloadToken: avatarReloadToken)
+                .opacity(affinity.dimmed ? 0.35 : 1)
+                .animation(.easeOut(duration: 0.15), value: affinity.dimmed)
 
-        // 放置区只在真的拖着标签时才挂。onDrop 的闭包无法被 SwiftUI 判定为「没变」，
-        // 常挂着会让每次改选中都重新注册一次放置区 —— 那正是 NSTableView 重入的来源。
-        // 平时不挂既省掉重入，也让不可放置的行直接显示禁止光标。
-        if affinity == .enabled {
-            base.onDrop(of: [.mgmailLabel], isTargeted: Binding(
-                get: { isDropTarget },
-                set: { ThreadRowCoordinator.shared.setDropTarget($0, key: summary.key) }
-            )) { ThreadRowCoordinator.shared.acceptLabelDrop($0, on: summary) }
-        } else {
-            base
+            // 放置区只在真的拖着标签时才挂。onDrop 的闭包无法被 SwiftUI 判定为「没变」，
+            // 常挂着会让每次改选中都重新注册一次放置区 —— 那正是 NSTableView 重入的来源。
+            // 平时不挂既省掉重入，也让不可放置的行直接显示禁止光标。
+            if affinity == .enabled {
+                base.onDrop(of: [.mgmailLabel], isTargeted: Binding(
+                    get: { isDropTarget },
+                    set: { ThreadRowCoordinator.shared.setDropTarget($0, key: summary.key) }
+                )) { ThreadRowCoordinator.shared.acceptLabelDrop($0, on: summary) }
+            } else {
+                base
+            }
         }
+        .contextMenu { menu }
+        // 右滑：标记已读/未读、旗标；左滑：归档、删除（纯图标）
+        .swipeActions(edge: .leading, allowsFullSwipe: true) { leadingSwipe }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) { trailingSwipe }
     }
 
     @ViewBuilder
@@ -710,9 +708,9 @@ private struct ThreadListRow: View {
     /// 右键里的标签子菜单：勾选即加、取消即去，一次一个请求。
     @ViewBuilder
     private func labelSubmenu(_ suffix: String) -> some View {
-        let prefix = "\(summary.accountID)\t"
-        let mine = labelMap.filter { $0.key.hasPrefix(prefix) }.map(\.value)
-            .sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+        // 按账号分好、排好序的现成拿来用：菜单内容是跟着行一起构造的，
+        // 每行现筛现排一遍，一屏行就是几十次本地化排序
+        let mine = rows.sortedLabels(account: summary.accountID)
         if !mine.isEmpty {
             Divider()
             Menu("标签" + suffix) {

@@ -240,6 +240,27 @@ final class MailStore: ObservableObject {
     /// 最近一次失败（界面提示用）。
     @Published var lastError: String?
 
+    /// 池子这一次是怎么变的。
+    ///
+    /// 版本号只说「变了」，列表听到就得把整个池子重新分组、排序一遍。可最常见的变化
+    /// 小得多：点开一封未读、加个旗标，动的只是一两封的标签。把这件事说清楚，
+    /// 列表就能只改那一两行——邮件攒到上万封之后，这是「点一下就有反应」和
+    /// 「点一下顿一下」的差别。
+    enum PoolChange {
+        /// 说不清动了哪些（同步合并、恢复、重建、删账号），照旧整份重算。
+        case bulk
+        /// 只有这几封的标签变了，邮件本身一封没多一封没少。
+        case labels(account: String, ids: [String])
+    }
+
+    /// 最近一次变化的说明。**先于** `revision` 写好，订阅版本号的人收到通知时读它。
+    private(set) var lastChange: PoolChange = .bulk
+
+    private func bump(_ change: PoolChange = .bulk) {
+        lastChange = change
+        revision += 1
+    }
+
     /// 正在跑增量同步的账户，防止定时和手动撞到一起重复拉。
     /// 界面上的「忙碌中」不看这个——那由 `NetworkActivity` 统一负责，它覆盖所有请求。
     private var syncing: Set<String> = []
@@ -291,7 +312,7 @@ final class MailStore: ObservableObject {
                 pools[account] = pool
             }
         }
-        revision += 1
+        bump()
     }
 
     // MARK: - 刷新（冷启动 / 定时 / 手动，三个时机共用这一个入口）
@@ -313,7 +334,7 @@ final class MailStore: ObservableObject {
                 var rebuilt = AccountPool()
                 rebuilt.remoteContentAllowed = pools[account]?.remoteContentAllowed ?? []
                 pools[account] = rebuilt
-                revision += 1
+                bump()
             } else {
                 apply(outcome, to: account)
                 let arrival = await fetchNew(outcome.added, account: account)
@@ -568,7 +589,7 @@ final class MailStore: ObservableObject {
             pool.messages[id] = message
         }
         pools[account] = pool
-        revision += 1
+        bump()
     }
 
     /// 一批新邮件的落地结果。
@@ -626,18 +647,23 @@ final class MailStore: ObservableObject {
 
     /// 按增删改这些邮件的标签。界面立刻响应，请求在外面发。
     func applyLabels(account: String, messageIDs: [String], add: [String], remove: [String]) {
-        guard !messageIDs.isEmpty, !add.isEmpty || !remove.isEmpty,
-              var pool = pools[account] else { return }
+        guard !messageIDs.isEmpty, !add.isEmpty || !remove.isEmpty, pools[account] != nil else { return }
+        // 顺着下标就地改，不把池子拿出来改完再放回去：拿出来就多了一个持有者，
+        // 改第一封时整张邮件字典会被原样拷一份——为了动一个标签拷上万封邮件。
+        var changed: [String] = []
         for id in messageIDs {
-            guard var message = pool.messages[id] else { continue }
-            var labels = Set(message.labelIds)
+            guard let current = pools[account]?.messages[id]?.labelIds else { continue }
+            let before = Set(current)
+            var labels = before
             labels.formUnion(add)
             labels.subtract(remove)
-            message.labelIds = labels.sorted()
-            pool.messages[id] = message
+            guard labels != before else { continue }
+            pools[account]?.messages[id]?.labelIds = labels.sorted()
+            changed.append(id)
         }
-        pools[account] = pool
-        revision += 1
+        // 一封都没真的变（给已读的再标一次已读）就不惊动任何人
+        guard !changed.isEmpty else { return }
+        bump(.labels(account: account, ids: changed))
         persist(account)
     }
 
@@ -680,7 +706,7 @@ final class MailStore: ObservableObject {
         }
         pool.refreshOldest()
         pools[account] = pool
-        revision += 1
+        bump()
     }
 
     private func setCursor(_ cursor: PoolCursor, key: String, account: String) {
@@ -709,11 +735,13 @@ final class MailStore: ObservableObject {
         let muted = NotifyPolicy.mutedAccounts
         return pools.reduce(0) { total, entry in
             guard !muted.contains(entry.key) else { return total }
-            return total + entry.value.messages.values.filter {
-                let labels = Set($0.labelIds)
-                return labels.contains("INBOX") && labels.contains("UNREAD")
-                    && labels.isDisjoint(with: ["SPAM", "TRASH"])
-            }.count
+            // 直接在标签数组上找：一封信也就五六个标签，为每封现建一个 Set 反而是大头
+            return total + entry.value.messages.values.reduce(0) { count, message in
+                let labels = message.labelIds
+                let counts = labels.contains("INBOX") && labels.contains("UNREAD")
+                    && !labels.contains("SPAM") && !labels.contains("TRASH")
+                return counts ? count + 1 : count
+            }
         }
     }
 
@@ -736,7 +764,7 @@ final class MailStore: ObservableObject {
     func drop(account: String) {
         pools.removeValue(forKey: account)
         persistTasks.removeValue(forKey: account)?.cancel()
-        revision += 1
+        bump()
     }
 }
 
