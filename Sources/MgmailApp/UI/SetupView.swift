@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// 首次运行引导：指导用户创建 Google OAuth 客户端并放置 oauth_client.json。
+/// 首次运行引导：.app 没内置 OAuth 客户端、用户目录里也没有时，指导用户创建并放置 oauth_client.json。
 struct SetupView: View {
     @EnvironmentObject private var appState: AppState
 
@@ -15,7 +15,7 @@ struct SetupView: View {
                     .foregroundStyle(.tint)
                 VStack(alignment: .leading) {
                     Text("配置 Gmail 访问权限").font(.title2).bold()
-                    Text("Mgmail 通过 Gmail API 访问邮件，需要你自己的 Google OAuth 客户端。")
+                    Text("这份安装包没有内置 OAuth 客户端，需要你自己建一个 Google OAuth 客户端。")
                         .foregroundStyle(.secondary)
                 }
             }

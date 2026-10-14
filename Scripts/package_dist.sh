@@ -9,6 +9,7 @@
 #   MGMAIL_TAG         这一包将挂在哪个 GitHub Release 下（决定 manifest 里的下载地址）
 #   MGMAIL_CHANNEL     stable | dev（写进 manifest，只作展示）
 #   MGMAIL_NOTES_FILE  更新说明（Markdown 文件路径），写进 manifest 给应用内弹窗显示
+#   MGMAIL_OAUTH_CLIENT 内置的 OAuth 客户端 JSON 原文（不给就找 Resources/oauth_client.json，见 app_bundle.sh）
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source Scripts/app_bundle.sh
@@ -41,6 +42,7 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/$APP_NAME"
 copy_app_icon "$APP_DIR"
+copy_oauth_client "$APP_DIR"
 write_info_plist "$APP_DIR" "$SHORT_VERSION" "$BUILD_NUMBER"
 
 echo "==> ad-hoc 签名"
