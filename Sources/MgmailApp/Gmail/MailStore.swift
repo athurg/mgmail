@@ -206,12 +206,12 @@ extension AccountPool {
 /// 回溯范围：拉多少封、拉到多早为止，两个条件谁先到就停在哪。
 enum BackfillPolicy {
     static var messageLimit: Int {
-        let stored = UserDefaults.standard.integer(forKey: SettingsKey.backfillLimit)
+        let stored = SettingsStore.shared.current.sync.backfillLimit
         return stored > 0 ? stored : 500
     }
 
     static var days: Int {
-        let stored = UserDefaults.standard.integer(forKey: SettingsKey.backfillDays)
+        let stored = SettingsStore.shared.current.sync.backfillDays
         return stored > 0 ? stored : 90
     }
 

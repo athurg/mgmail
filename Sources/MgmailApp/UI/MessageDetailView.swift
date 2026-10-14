@@ -10,7 +10,7 @@ struct MessageDetailView: View {
     @EnvironmentObject private var mailStore: MailStore
     @StateObject private var model = MessageDetailModel()
     /// 全局设置：是否按会话显示邮件。关闭时右栏只展示选中的那一封。
-    @AppStorage(SettingsKey.conversationView) private var conversationView = false
+    @Setting(\.display.conversationView) private var conversationView
     /// 叠加卡片是否在场。多选一开就为 true；退出多选时不立刻撤，
     /// 等卡片飞回列表再由 `onLeaveFinished` 关掉。
     @State private var stackVisible = false
@@ -123,7 +123,7 @@ struct MessageBodySection: View {
     /// 这是「这一次」的开关，让正文立刻切过去；「以后每次」记在池子里，见 `remoteEnabled`。
     @State private var showRemote = false
     /// 全局设置：是否默认加载远程内容。默认关闭。
-    @AppStorage(SettingsKey.loadRemoteContentByDefault) private var loadRemoteByDefault = false
+    @Setting(\.display.loadRemoteContentByDefault) private var loadRemoteByDefault
 
     init(message: RenderedMessage, account: String) {
         self.message = message

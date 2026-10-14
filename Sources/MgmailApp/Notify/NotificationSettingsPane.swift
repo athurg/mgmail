@@ -9,12 +9,11 @@ struct NotificationSettingsPane: View {
     @EnvironmentObject private var mailStore: MailStore
     @ObservedObject private var permission = NotificationPermission.shared
 
-    @AppStorage(SettingsKey.notifyEnabled) private var enabled = true
-    @AppStorage(SettingsKey.notifyMainCategoryOnly) private var mainOnly = true
-    @AppStorage(SettingsKey.notifySound) private var sound = true
-    @AppStorage(SettingsKey.notifyDockBadge) private var dockBadge = true
-    /// 静音名单存的是数组，`@AppStorage` 接不了，自己拿一份镜像。
-    @State private var muted: Set<String> = NotifyPolicy.mutedAccounts
+    @Setting(\.notify.enabled) private var enabled
+    @Setting(\.notify.mainCategoryOnly) private var mainOnly
+    @Setting(\.notify.sound) private var sound
+    @Setting(\.notify.dockBadge) private var dockBadge
+    @Setting(\.notify.mutedAccounts) private var muted
 
     var body: some View {
         Form {
@@ -72,8 +71,6 @@ struct NotificationSettingsPane: View {
         }
         .formStyle(.grouped)
         .task { await permission.refresh() }
-        // 别的地方（比如另一台设备同步过来）改了名单时跟上
-        .onAppear { muted = NotifyPolicy.mutedAccounts }
     }
 
     /// 开关是「开启通知」，存的却是静音名单，所以两头是反的。
@@ -82,7 +79,6 @@ struct NotificationSettingsPane: View {
             get: { !muted.contains(account) },
             set: { on in
                 NotifyPolicy.setMuted(!on, account: account)
-                muted = NotifyPolicy.mutedAccounts
                 mailStore.refreshBadge()
             }
         )

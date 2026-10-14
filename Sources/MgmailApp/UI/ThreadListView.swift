@@ -8,7 +8,7 @@ struct ThreadListView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model = ThreadListModel()
     /// 全局设置：是否按会话显示邮件。默认关闭（每行一封独立邮件）。
-    @AppStorage(SettingsKey.conversationView) private var conversationView = false
+    @Setting(\.display.conversationView) private var conversationView
     /// 已读/未读过滤（右上角过滤器，记住上次选择）。
     @AppStorage(SettingsKey.readFilter) private var readFilterRaw = ReadFilter.all.rawValue
     /// 搜索范围（记住上次选择：一直想搜全部的人不必每次都改一遍）。

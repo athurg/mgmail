@@ -54,16 +54,16 @@ final class UpdateChecker: ObservableObject {
     // MARK: - 偏好
 
     var channel: UpdateChannel {
-        UpdateChannel(rawValue: UserDefaults.standard.string(forKey: SettingsKey.updateChannel) ?? "") ?? .stable
+        UpdateChannel(rawValue: SettingsStore.shared.current.update.channel) ?? .stable
     }
 
     var autoCheck: Bool {
-        UserDefaults.standard.object(forKey: SettingsKey.updateAutoCheck) as? Bool ?? true
+        SettingsStore.shared.current.update.autoCheck
     }
 
     private var skippedBuild: Int {
-        get { UserDefaults.standard.integer(forKey: SettingsKey.updateSkippedBuild) }
-        set { UserDefaults.standard.set(newValue, forKey: SettingsKey.updateSkippedBuild) }
+        get { SettingsStore.shared.current.update.skippedBuild }
+        set { SettingsStore.shared.update { $0.update.skippedBuild = newValue } }
     }
 
     // MARK: - 检查

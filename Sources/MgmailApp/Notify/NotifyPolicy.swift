@@ -2,12 +2,12 @@ import Foundation
 
 /// 通知策略：什么该弹、怎么弹。读的是设置窗口「通知」页里的那几项。
 ///
-/// 与 `BackfillPolicy` 同一个路数——直接读 `UserDefaults`，不经过视图，
-/// 因为判断发生在同步管线里（`MailStore`），那里拿不到 `@AppStorage`。
+/// 与 `BackfillPolicy` 同一个路数——直接读 `SettingsStore`，不经过视图，
+/// 因为判断发生在同步管线里（`MailStore`），那里拿不到 `@Setting`。
 enum NotifyPolicy {
     /// 总开关。默认开。
     static var enabled: Bool {
-        UserDefaults.standard.object(forKey: SettingsKey.notifyEnabled) as? Bool ?? true
+        SettingsStore.shared.current.notify.enabled
     }
 
     /// 只通知「主要」邮件：推广、社交、论坛三类不弹。默认开。
@@ -15,12 +15,12 @@ enum NotifyPolicy {
     /// 刻意**不**把 `CATEGORY_UPDATES` 算进屏蔽范围——订单确认、验证码、
     /// 服务告警都落在那一类里，那正是最需要立刻知道的邮件。
     static var mainCategoryOnly: Bool {
-        UserDefaults.standard.object(forKey: SettingsKey.notifyMainCategoryOnly) as? Bool ?? true
+        SettingsStore.shared.current.notify.mainCategoryOnly
     }
 
     /// 通知带提示音。默认开。
     static var sound: Bool {
-        UserDefaults.standard.object(forKey: SettingsKey.notifySound) as? Bool ?? true
+        SettingsStore.shared.current.notify.sound
     }
 
     /// 在 Dock 图标上显示未读数。默认开。
@@ -28,7 +28,7 @@ enum NotifyPolicy {
     /// 这一项不依赖通知权限——`dockTile.badgeLabel` 是自家进程的事，
     /// 所以用户拒绝了通知授权时，角标仍然能用，是唯一的降级手段。
     static var dockBadge: Bool {
-        UserDefaults.standard.object(forKey: SettingsKey.notifyDockBadge) as? Bool ?? true
+        SettingsStore.shared.current.notify.dockBadge
     }
 
     /// 被静音的账号（邮箱地址集合）。不在集合里的账号一律通知。
@@ -36,13 +36,8 @@ enum NotifyPolicy {
     /// 存的是「静音名单」而不是「开启名单」，这样新登录的账号默认就有通知，
     /// 不需要用户再去设置里打开一遍。
     static var mutedAccounts: Set<String> {
-        get {
-            let raw = UserDefaults.standard.stringArray(forKey: SettingsKey.notifyMutedAccounts)
-            return Set(raw ?? [])
-        }
-        set {
-            UserDefaults.standard.set(Array(newValue).sorted(), forKey: SettingsKey.notifyMutedAccounts)
-        }
+        get { Set(SettingsStore.shared.current.notify.mutedAccounts) }
+        set { SettingsStore.shared.update { $0.notify.mutedAccounts = newValue.sorted() } }
     }
 
     static func isMuted(_ account: String) -> Bool {

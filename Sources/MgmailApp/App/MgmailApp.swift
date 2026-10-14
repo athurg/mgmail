@@ -215,7 +215,7 @@ struct RootView: View {
     @ObservedObject private var router = NotificationRouter.shared
     @Environment(\.openSettings) private var openSettings
     /// 行 id 的语义随它变（会话模式下是 threadId，否则是 messageId），跳转要按它来。
-    @AppStorage(SettingsKey.conversationView) private var conversationView = false
+    @Setting(\.display.conversationView) private var conversationView
 
     var body: some View {
         VStack(spacing: 0) {

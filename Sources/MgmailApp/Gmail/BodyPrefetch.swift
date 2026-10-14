@@ -21,7 +21,7 @@ enum BodyPrefetch {
         guard !messages.isEmpty else { return }
         // 按会话显示时，用户点开一行拿到的是整串，缓存的键也是会话 id——
         // 预取要跟界面用同一把键，否则存下来的那份谁也找不到
-        let conversation = UserDefaults.standard.bool(forKey: SettingsKey.conversationView)
+        let conversation = SettingsStore.shared.current.display.conversationView
 
         var visited: Set<String> = []
         var fetched = 0
