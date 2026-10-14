@@ -9,6 +9,24 @@ import SwiftUI
 ///
 /// 把动作收进这个长期存活的对象后，行视图的字段全是可比较的值加一个稳定的引用，
 /// SwiftUI 比较下来没变化就整行跳过，重入随之消失。
+/// 列表行的身份：会话 key 再加上「这行有没有标签 chip」。
+///
+/// macOS 的 List 底下是 NSTableView，行高按行身份缓存：身份不变时只换内容，
+/// 高度沿用旧值 —— 给一封原本没标签的邮件打上标签，chip 那一行就会被行的下边缘裁掉。
+/// 身份只在「有 chip / 没 chip」之间翻转，正对应唯一一次真实的高度变化；
+/// 已读、旗标这些不改高度的变化不参与，免得白白重建整行。
+struct ThreadRowItem: Identifiable {
+    /// 身份是个现成的值，不拼字符串：List 每次比对都要把所有行的 id 取一遍。
+    struct ID: Hashable {
+        let key: SelectedThread
+        let hasChips: Bool
+    }
+
+    let summary: ThreadSummary
+    let hasChips: Bool
+    var id: ID { ID(key: summary.key, hasChips: hasChips) }
+}
+
 @MainActor
 final class ThreadRowCoordinator: ObservableObject {
     /// 单例。行视图必须通过静态成员访问它：一旦把它作为字段存进行里，
@@ -32,7 +50,59 @@ final class ThreadRowCoordinator: ObservableObject {
 
     /// 内容真的变了才替换，保持字典实例稳定。
     func updateLabelMap(_ fresh: [String: GmailLabel]) {
-        if fresh != labelMap { labelMap = fresh }
+        guard fresh != labelMap else { return }
+        labelMap = fresh
+        labelMapVersion &+= 1
+        // 顺手按账号拆成集合，判断「这行有没有 chip」时就不必为每个标签现拼一个键
+        userLabelIDs = [:]
+        labelsByAccount = [:]
+        for (key, label) in fresh {
+            let parts = key.split(separator: "\t", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            userLabelIDs[String(parts[0]), default: []].insert(String(parts[1]))
+            labelsByAccount[String(parts[0]), default: []].append(label)
+        }
+        for account in labelsByAccount.keys {
+            labelsByAccount[account]?.sort { $0.name.localizedCompare($1.name) == .orderedAscending }
+        }
+    }
+
+    /// 某个账号的用户标签，按名称排好（右键里的标签子菜单用）。
+    func sortedLabels(account: String) -> [GmailLabel] {
+        labelsByAccount[account] ?? []
+    }
+
+    private var labelsByAccount: [String: [GmailLabel]] = [:]
+
+    private var labelMapVersion = 0
+    /// 各账号的用户标签 id（`labelMap` 的另一种摆法，跟着它一起换）。
+    private var userLabelIDs: [String: Set<String>] = [:]
+
+    // MARK: - 列表行
+
+    /// 上一次算出来的行，连同它是照着哪个版本的列表、哪个版本的标签算的。
+    private var rowItemsCache: (model: ObjectIdentifier, summaries: Int, labels: Int, items: [ThreadRowItem])?
+
+    /// 交给 `List` 的那一排行。
+    ///
+    /// 列表内容和标签都没变时，原样交回上一次那个数组，不重新算。中栏的 body 重跑得
+    /// 远比列表内容变化勤——点一下选中、右栏换一封、任何一处状态动一下都会来一遍——
+    /// 每次都把上万行重新过一遍、每行现拼一个 id，光这一步就够让「点一下」慢半拍；
+    /// 而数组还是同一个时，SwiftUI 那边的比对也几乎不花时间。
+    func rowItems() -> [ThreadRowItem] {
+        guard let model else { return [] }
+        let owner = ObjectIdentifier(model)
+        if let cache = rowItemsCache, cache.model == owner,
+           cache.summaries == model.summariesVersion, cache.labels == labelMapVersion {
+            return cache.items
+        }
+        let items = model.summaries.map { summary in
+            let mine = userLabelIDs[summary.accountID]
+            return ThreadRowItem(summary: summary,
+                                 hasChips: mine.map { ids in summary.labelIds.contains { ids.contains($0) } } ?? false)
+        }
+        rowItemsCache = (owner, model.summariesVersion, labelMapVersion, items)
+        return items
     }
 
     /// 选中的行最后一次出现在列表里时的下标（多选取最靠下的那个，和删除时的算法一致）。
@@ -45,9 +115,16 @@ final class ThreadRowCoordinator: ObservableObject {
 
     /// 由列表每次布局时调用：选中的行还在列表里就更新位置，不在了就留着上一次的。
     func noteLayout(summaries: [ThreadSummary], selection: Set<SelectedThread>) {
-        guard !selection.isEmpty,
-              let index = summaries.indices.last(where: { selection.contains(summaries[$0].key) })
-        else { return }
+        guard !selection.isEmpty else { return }
+        let index: Int?
+        if selection.count == 1, let only = selection.first {
+            // 只选了一封（绝大多数时候）：从头找到它就停。倒着找的话，
+            // 看的是列表顶上那几封时，每次布局都要把整张列表从尾巴扫到头。
+            index = summaries.firstIndex { $0.id == only.threadID && $0.accountID == only.accountID }
+        } else {
+            index = summaries.indices.last(where: { selection.contains(summaries[$0].key) })
+        }
+        guard let index else { return }
         anchorIndex = index
     }
 

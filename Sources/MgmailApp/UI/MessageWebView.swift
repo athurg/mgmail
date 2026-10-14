@@ -76,12 +76,55 @@ final class PassthroughWebView: WKWebView {
     }
 }
 
+/// 正文 WebView 的回收站：用完的不销毁，洗干净留给下一封。
+///
+/// 每个新建的 WKWebView 都要 WebKit 给它配一个渲染进程、把本机装的字体挨个登记过去，
+/// 这些全在主线程上——拿真实数据量下来，点一封邮件主线程要忙的那段时间里，
+/// 三分之一以上花在这儿，而且和邮件多大、列表多长都没关系，每点一下交一次。
+/// 留着用过的那个，进程和字体都是现成的，下一封只是往里换一页内容。
+@MainActor
+enum WebViewPool {
+    private static var idle: [PassthroughWebView] = []
+    /// 最多留几个闲着的。一串会话展开好几封时会同时用掉几个，再多留就是白占内存。
+    private static let capacity = 4
+
+    static func take() -> PassthroughWebView {
+        idle.popLast() ?? make()
+    }
+
+    /// 还回来：先换成空白页，再入库。
+    ///
+    /// 不清的话，下一封拿到它的那一瞬间，上面还是上一封的正文。
+    static func recycle(_ view: PassthroughWebView) {
+        view.navigationDelegate = nil
+        view.stopLoading()
+        view.hasHorizontalOverflow = false
+        guard idle.count < capacity else { return }
+        view.loadHTMLString("", baseURL: nil)
+        idle.append(view)
+    }
+
+    /// 提前备好一个，第一封邮件也不必等渲染进程冷启动。
+    static func warmUp() {
+        guard idle.isEmpty else { return }
+        let view = make()
+        view.loadHTMLString("", baseURL: nil)
+        idle.append(view)
+    }
+
+    private static func make() -> PassthroughWebView {
+        let view = PassthroughWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        view.setValue(false, forKey: "drawsBackground") // 透明背景，融入 SwiftUI
+        return view
+    }
+}
+
 /// 正文卡片的高度记忆与 WebKit 预热。
 ///
-/// 切换邮件时每封正文都是一个新建的 WKWebView，而它要等 WebKit 渲染进程起来、
-/// HTML 解析完、脚本回报高度之后才撑得开——在此之前卡片只有初始高度，
+/// 正文要等 HTML 解析完、脚本回报高度之后才撑得开——在此之前卡片只有初始高度，
 /// 用户看到的就是「标题已经换了，正文却空着」。这里从两头缩短那段空白：
-/// 提前把渲染进程拉起来，并记住每封邮件量到过的高度，再打开时直接按那个高度铺开。
+/// 提前把渲染进程拉起来（见 `WebViewPool`），并记住每封邮件量到过的高度，
+/// 再打开时直接按那个高度铺开。
 @MainActor
 enum MessageBodyLayout {
     private static var heights: [String: CGFloat] = [:]
@@ -90,7 +133,6 @@ enum MessageBodyLayout {
     /// 记多少封的高度。这只是个开屏加速的提示值，记不住最多是正文先塌一下再撑开，
     /// 所以没必要为它无限占着内存——长期开着的窗口会一直往里加。
     private static let capacity = 400
-    private static var warmup: WKWebView?
 
     static func height(for messageID: String) -> CGFloat {
         heights[messageID] ?? 40
@@ -106,13 +148,9 @@ enum MessageBodyLayout {
         order.removeFirst(drop)
     }
 
-    /// 提前起一个空 WebView，把 WebKit 的渲染进程拉起来，
-    /// 第一封邮件的正文就不必等进程冷启动。
+    /// 提前把 WebKit 的渲染进程拉起来，第一封邮件的正文就不必等进程冷启动。
     static func warmUp() {
-        guard warmup == nil else { return }
-        let view = WKWebView(frame: .zero)
-        view.loadHTMLString("<html><body></body></html>", baseURL: nil)
-        warmup = view
+        WebViewPool.warmUp()
     }
 }
 
@@ -127,12 +165,11 @@ struct MessageWebView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
+        // 从回收站领一个（见 `WebViewPool`），没有闲着的才新建
+        let webView = WebViewPool.take()
         // 让页面能把内容高度变化（图片加载、布局变动）回传给宿主。
-        config.userContentController.add(context.coordinator, name: "heightChanged")
-        let webView = PassthroughWebView(frame: .zero, configuration: config)
+        webView.configuration.userContentController.add(context.coordinator, name: "heightChanged")
         webView.navigationDelegate = context.coordinator
-        webView.setValue(false, forKey: "drawsBackground") // 透明背景，融入 SwiftUI
         context.coordinator.load(in: webView)
         return webView
     }
@@ -145,22 +182,33 @@ struct MessageWebView: NSViewRepresentable {
         }
     }
 
-    /// 视图销毁时移除脚本消息处理器，避免 userContentController 强引用 coordinator 泄漏。
+    /// 视图销毁时移除脚本消息处理器，避免 userContentController 强引用 coordinator 泄漏；
+    /// web view 本身不扔，还给回收站。
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "heightChanged")
+        if let reusable = webView as? PassthroughWebView {
+            WebViewPool.recycle(reusable)
+        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var parent: MessageWebView
         var lastHTML: String?
         var lastBlockRemote: Bool?
+        /// 自己发起的那一次加载，以及它的页面是不是已经换上来了。
+        ///
+        /// web view 是复用的（见 `WebViewPool`），接手时上面可能还有上一封没走干净的
+        /// 尾巴：迟到的高度回报、回收时那张空白页的加载完成。只认自己这一页的，
+        /// 否则这封信会先按别人的高度铺一下。
+        private var navigation: WKNavigation?
+        private var committed = false
 
         init(_ parent: MessageWebView) { self.parent = parent }
 
         /// 收到页面回传的内容尺寸，同步更新宿主 frame，避免内部产生纵向溢出滚动；
         /// 横向溢没溢出则交给 web view，它据此决定横滑要不要留下自己滚。
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.name == "heightChanged", let payload = message.body as? [String: Any],
+            guard committed, message.name == "heightChanged", let payload = message.body as? [String: Any],
                   let h = (payload["height"] as? NSNumber)?.doubleValue else { return }
             let overflowX = (payload["overflowX"] as? NSNumber)?.boolValue ?? false
             let webView = message.webView
@@ -183,16 +231,25 @@ struct MessageWebView: NSViewRepresentable {
             lastBlockRemote = parent.blockRemote
             let html = parent.html
             let block = parent.blockRemote
+            committed = false
+            navigation = nil
             Task { @MainActor in
                 webView.configuration.userContentController.removeAllContentRuleLists()
                 if block, let list = await RemoteContentBlocker.shared.ruleList() {
                     webView.configuration.userContentController.add(list)
                 }
-                webView.loadHTMLString(Self.wrap(html), baseURL: nil)
+                // 等规则的这一小会儿里视图可能已经被拆掉、web view 已经在给别的信用了
+                guard webView.navigationDelegate === self else { return }
+                self.navigation = webView.loadHTMLString(Self.wrap(html), baseURL: nil)
             }
         }
 
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            if navigation === self.navigation { committed = true }
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard navigation === self.navigation else { return }
             // 关掉 WKWebView 内部滚动视图的弹性，配合精确高度，让内部无内容可滚，
             // 滚轮事件顺着响应链交给外层 ScrollView 整体滚动。
             disableInternalScrollElasticity(webView)
