@@ -33,8 +33,10 @@ struct FollowMainScreen: NSViewRepresentable {
             // 挂上窗口时 SwiftUI 还没把记住的位置恢复回来，这时挪了也会被它盖掉；等窗口真正
             // 排上屏再看它落在哪。排上屏的信号是遮挡状态变化（从「不在屏上」变成「可见」）——
             // 应用不在前台时窗口出来也不成为焦点，只盯 didBecomeKey 会漏掉；两个都听，谁先到谁算。
-            let place: (Notification) -> Void = { [weak self] _ in
-                guard let self, self.pending, window.isVisible else { return }
+            // 窗口只能弱捕获：通知中心持有这个闭包、这个视图持有通知令牌、窗口又持有这个视图，
+            // 强捕获就成了环，窗口关了也释放不掉
+            let place: (Notification) -> Void = { [weak self, weak window] _ in
+                guard let self, let window, self.pending, window.isVisible else { return }
                 self.pending = false
                 FollowMainScreen.moveToHostScreen(window)
             }

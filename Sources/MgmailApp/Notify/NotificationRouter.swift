@@ -68,13 +68,10 @@ final class NotificationRouter: NSObject, ObservableObject, UNUserNotificationCe
 
     /// 把应用叫到前台；主窗口已经关掉时再让它重新开一个。
     ///
-    /// 重开走的是「打开自己」——已在运行的应用收到这一下会当成用户点了 Dock 图标，
-    /// SwiftUI 的 `WindowGroup` 因此会补出一个窗口。这是从 AppKit 侧唯一能可靠
-    /// 触发它的办法：`openWindow` 只在视图里拿得到，而此刻恰恰没有视图。
+    /// 认的是主窗口而不是随便哪扇窗：跳转在 `RootView` 里做，只开着一扇独立邮件窗口时
+    /// 没有谁来接这个 `pending`。重开交给 `MainWindow`——原来「打开自己」装作点了 Dock
+    /// 的办法，在 SwiftUI 不会补开窗口之后也就跟着失灵了。
     static func bringToFront() {
-        NSApp.activate(ignoringOtherApps: true)
-        let hasMainWindow = NSApp.windows.contains { $0.canBecomeMain && $0.isVisible }
-        guard !hasMainWindow else { return }
-        NSWorkspace.shared.open(Bundle.main.bundleURL)
+        MainWindow.show()
     }
 }

@@ -14,7 +14,8 @@ struct MgmailApp: App {
     @StateObject private var sync = SyncScheduler()
 
     var body: some Scene {
-        WindowGroup {
+        // 带 id 是为了能按 id 重开：点 Dock、点通知时没有主窗口就由 MainWindow 开一扇
+        WindowGroup(id: MainWindow.id) {
             RootView()
                 .environmentObject(appState)
                 .environmentObject(labelStore)
@@ -32,6 +33,7 @@ struct MgmailApp: App {
             AboutCommand()
             CheckForUpdatesCommand()
             NewMailCommand(appState: appState)
+            MainWindowCommand()
             GetMailCommands(appState: appState)
             SearchMailCommand(appState: appState)
             // 账号已在「设置」里统一管理，不再单独开菜单。
@@ -103,6 +105,13 @@ struct MgmailApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationRouter.shared.install()
+    }
+
+    /// 点 Dock 图标：一扇窗都没开着时自己开主窗口（SwiftUI 在这儿不会补开，原因见 `MainWindow`）。
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+        MainActor.assumeIsolated { MainWindow.show() }
+        return false
     }
 }
 
