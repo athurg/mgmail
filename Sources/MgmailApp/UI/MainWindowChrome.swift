@@ -96,7 +96,10 @@ struct MainWindowChrome: NSViewRepresentable {
         static let insetX: CGFloat = 10
         private static let buttonTypes: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
 
-        let window: NSWindow
+        /// 必须是弱引用：这份布局挂在 ChromeView 上，ChromeView 又在这扇窗的视图树里，
+        /// 强引用就是一个环——关掉的主窗口连同整棵视图树永远释放不掉，里面的列表还活着、
+        /// 跟着 AppState 一起重绘，把共用的 `ThreadRowCoordinator.model` 抢成自己那份旧的。
+        weak var window: NSWindow?
         /// 装圆点那层的原始高度、圆点中心离它顶边多远、三个圆点在这层里的原始位置——
         /// 都是 AppKit 定的，进来时量一次，之后就按这个摆回去。
         let titlebarHeight: CGFloat
@@ -116,7 +119,7 @@ struct MainWindowChrome: NSViewRepresentable {
 
         /// 当前窗口里的那几层：装圆点的那层、它的容器、三个圆点。
         private var views: (container: NSView, titlebar: NSView, buttons: [(NSWindow.ButtonType, NSView)])? {
-            guard let close = window.standardWindowButton(.closeButton),
+            guard let window, let close = window.standardWindowButton(.closeButton),
                   let titlebar = close.superview, let container = titlebar.superview else { return nil }
             let buttons = Self.buttonTypes.compactMap { type in
                 window.standardWindowButton(type).map { (type, $0) }
@@ -133,11 +136,16 @@ struct MainWindowChrome: NSViewRepresentable {
         /// 摆到位；已经在位的一个都不碰（frame 通知就是从这儿收敛的）。
         func apply() {
             // 全屏里圆点由系统藏起来，标题栏也不归这儿管
-            guard !window.styleMask.contains(.fullScreen),
+            guard let window, !window.styleMask.contains(.fullScreen),
                   let frameView = window.contentView?.superview, let views else { return }
             let containerFrame = NSRect(x: 0, y: frameView.bounds.height - Self.height,
                                         width: frameView.bounds.width, height: Self.height)
             if views.container.frame != containerFrame { views.container.frame = containerFrame }
+            // 标题栏得压在内容上面。窗口刚建出来时 AppKit 有时把它排在 SwiftUI 的内容视图底下，
+            // 内容又一路铺到窗口顶（桌布 ignoresSafeArea），三个圆点就整个被盖住、看不见也点不着。
+            if frameView.subviews.last !== views.container, views.container.superview === frameView {
+                frameView.addSubview(views.container, positioned: .above, relativeTo: nil)
+            }
 
             // 容器坐标 y 向上：这层的顶边要在 (容器高 - (目标中心 - 圆点离顶偏移)) 处
             let top = Self.height - (Self.buttonCenterY - buttonOffsetFromTop)

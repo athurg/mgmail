@@ -15,14 +15,24 @@ import AppKit
 /// 挂在 List 的背景上，只装一次；行视图上什么都不用加，也就不会牵动 NSTableView 重入
 /// （行上加闭包会引发什么，见 `ThreadRowCoordinator` 顶部）。
 struct ThreadListDoubleClick: NSViewRepresentable {
+    /// 这张表显示的就是它的 `summaries`，行号要回到它身上去翻译。
+    ///
+    /// 不能去问 `ThreadRowCoordinator.shared.model`：那是最后一次重绘的列表写进去的，
+    /// 未必是被双击的这张——它一旦指着别的列表，双击第 0 行打开的就是别处的第 0 封。
+    let model: ThreadListModel
+
     func makeNSView(context: Context) -> NSView { InstallerView() }
 
     /// List 重建时底下的表格可能换了一张，每次布局都补装一次（幂等）。
     func updateNSView(_ nsView: NSView, context: Context) {
-        (nsView as? InstallerView)?.install()
+        guard let installer = nsView as? InstallerView else { return }
+        installer.model = model
+        installer.install()
     }
 
     final class InstallerView: NSView {
+        weak var model: ThreadListModel?
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             // 这会儿 List 的表格通常还没搭好，等一拍再找
@@ -72,9 +82,9 @@ struct ThreadListDoubleClick: NSViewRepresentable {
         @objc private func openInWindow(_ sender: Any?) {
             guard let table = sender as? NSTableView ?? enclosingTable() else { return }
             let row = table.clickedRow
-            guard row >= 0 else { return } // 点在空白处
+            guard row >= 0, let model else { return } // 点在空白处
             MainActor.assumeIsolated {
-                ThreadRowCoordinator.shared.openInWindow(rowAt: row)
+                ThreadRowCoordinator.shared.openInWindow(rowAt: row, in: model)
             }
         }
     }

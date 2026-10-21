@@ -186,10 +186,10 @@ final class ThreadRowCoordinator: ObservableObject {
 
     /// 双击表格第 `row` 行。
     ///
-    /// 表格给的是行号（见 `ThreadListDoubleClick`），这里翻译成那一封邮件。
+    /// 表格给的是行号（见 `ThreadListDoubleClick`），这里按那张表自己的 `model` 翻译成那一封邮件。
     /// 列表末尾还有一行「已回溯至 …」的页脚，它的行号越界，正好被这里挡掉。
-    func openInWindow(rowAt row: Int) {
-        guard let model, model.summaries.indices.contains(row) else { return }
+    func openInWindow(rowAt row: Int, in model: ThreadListModel) {
+        guard model.summaries.indices.contains(row) else { return }
         openInWindow(model.summaries[row].key)
     }
 

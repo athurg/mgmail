@@ -415,7 +415,7 @@ struct ThreadListView: View {
         .scrollContentBackground(.hidden)
         // 双击某行 → 独立窗口。装在列表上而不是行上，用的是表格自己的双击动作，
         // 单击选中因此毫发无伤，详见 ThreadListDoubleClick。
-        .background(ThreadListDoubleClick())
+        .background(ThreadListDoubleClick(model: model))
         // 浮动批量条：用 overlay 不占布局空间，避免出现/消失时列表位移
         .overlay(alignment: .bottom) { batchBar }
         // 按删除键：删除所有选中的会话
